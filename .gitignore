@@ -1,0 +1,5 @@
+venv/
+__pycahe__/
+logs.txt
+*.txt
+search-new-keys.json
