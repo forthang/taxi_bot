@@ -1,11 +1,11 @@
 taxi/venv/
-taxi/__pycahe__/
-taxilogs.txt
+taxi/__pycache__/
+taxi/logs.txt
 taxi/*.txt
 taxi/search-new-keys.json
 
 blacktaxi/venv/
-blacktaxi/__pycahe__/
+blacktaxi/__pycache__/
 blacktaxi/logs/
 blacktaxi/*.txt
 blacktaxi/search-new-keys.json
