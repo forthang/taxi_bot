@@ -1,9 +1,10 @@
 {
-    "app_id": 2040,
-    "app_hash": "b18441a1ff607e10a989891a5462e627",
+    "app_id": 21625015, 
+    "app_hash": "63b61db51ac0fe9f3f6226fd3b93aca9",
     "device": "EP45-DS2L",
     "sdk": "Windows 10",
     "app_version": "5.10.3 x64",
     "system_lang_code": "en-US",
     "lang_code": "en"
 }
+
