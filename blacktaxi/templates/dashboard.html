@@ -1,0 +1,352 @@
+{% extends "base.html" %}
+
+{% block title %}Дашборд - Админ-панель VIP бота{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">📊 Дашборд</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <div class="btn-group me-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="refreshStats()">
+                <i class="fas fa-sync-alt"></i> Обновить
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-primary" onclick="syncUsers()">
+                <i class="fas fa-users"></i> Синхронизировать пользователей
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Статистика -->
+<div class="row mb-4">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">Всего пользователей</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ total_users }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-users fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">VIP пользователи</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ vip_users }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-crown fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">Всего платежей</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ total_payments }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-credit-card fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">Успешные платежи</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ successful_payments }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-check-circle fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">Всего заказов такси</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ total_taxi_orders }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-taxi fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">Активные заказы</div>
+                        <div class="h5 mb-0 font-weight-bold">{{ active_taxi_orders }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-clock fa-2x text-white-50"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Графики -->
+<div class="row mb-4">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">📈 Новые пользователи (30 дней)</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="usersChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">💰 Платежи (30 дней)</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="paymentsChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Последние пользователи -->
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">👥 Последние пользователи</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Username</th>
+                                <th>VIP</th>
+                                <th>Дата</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in recent_users %}
+                            <tr>
+                                <td>{{ user.user_id }}</td>
+                                <td>{{ user.username or 'N/A' }}</td>
+                                <td>
+                                    {% if user.is_vip %}
+                                        <span class="badge bg-success">VIP</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Обычный</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ user.created_at[:10] }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">💳 Последние платежи</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Пользователь</th>
+                                <th>Сумма</th>
+                                <th>Статус</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for payment in recent_payments %}
+                            <tr>
+                                <td>{{ payment.payment_id[:8] }}...</td>
+                                <td>{{ payment.username or payment.user_id }}</td>
+                                <td>{{ payment.amount }}₽</td>
+                                <td>
+                                    {% if payment.status == 'CONFIRMED' %}
+                                        <span class="badge bg-success">Успешно</span>
+                                    {% elif payment.status == 'PENDING' %}
+                                        <span class="badge bg-warning">Ожидает</span>
+                                    {% else %}
+                                        <span class="badge bg-danger">{{ payment.status }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let usersChart, paymentsChart;
+
+function initCharts() {
+    const usersCtx = document.getElementById('usersChart').getContext('2d');
+    const paymentsCtx = document.getElementById('paymentsChart').getContext('2d');
+
+    usersChart = new Chart(usersCtx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Новые пользователи',
+                data: [],
+                borderColor: '#667eea',
+                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                tension: 0.4
+            }, {
+                label: 'VIP пользователи',
+                data: [],
+                borderColor: '#ff6b6b',
+                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+
+    paymentsChart = new Chart(paymentsCtx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Платежи',
+                data: [],
+                backgroundColor: '#667eea'
+            }, {
+                label: 'Доход (₽)',
+                data: [],
+                backgroundColor: '#ff6b6b',
+                yAxisID: 'y1'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    position: 'left'
+                },
+                y1: {
+                    beginAtZero: true,
+                    position: 'right',
+                    grid: {
+                        drawOnChartArea: false
+                    }
+                }
+            }
+        }
+    });
+}
+
+function refreshStats() {
+    fetch('/api/stats')
+        .then(response => response.json())
+        .then(data => {
+            // Обновляем график пользователей
+            usersChart.data.labels = data.user_stats.map(item => item.date);
+            usersChart.data.datasets[0].data = data.user_stats.map(item => item.new_users);
+            usersChart.data.datasets[1].data = data.user_stats.map(item => item.vip_users);
+            usersChart.update();
+
+            // Обновляем график платежей
+            paymentsChart.data.labels = data.payment_stats.map(item => item.date);
+            paymentsChart.data.datasets[0].data = data.payment_stats.map(item => item.total_payments);
+            paymentsChart.data.datasets[1].data = data.payment_stats.map(item => item.total_revenue || 0);
+            paymentsChart.update();
+        });
+}
+
+function syncUsers() {
+    const button = event.target;
+    const originalText = button.innerHTML;
+    
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Синхронизация...';
+    
+    fetch('/api/sync_users', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ ${data.message}\nВсего участников: ${data.total_members}\nДобавлено: ${data.added_count}`);
+            location.reload(); // Перезагружаем страницу для обновления статистики
+        } else {
+            alert(`❌ Ошибка: ${data.message}`);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('❌ Произошла ошибка при синхронизации');
+    })
+    .finally(() => {
+        button.disabled = false;
+        button.innerHTML = originalText;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initCharts();
+    refreshStats();
+});
+</script>
+{% endblock %} 

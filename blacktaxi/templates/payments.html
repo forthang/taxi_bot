@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+
+{% block title %}Платежи - Админ-панель VIP бота{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">💳 Платежи</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <span class="text-muted">Всего: {{ total }}</span>
+    </div>
+</div>
+
+<!-- Фильтры -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-3">
+                <label for="status" class="form-label">Статус</label>
+                <select class="form-select" id="status" name="status">
+                    <option value="">Все статусы</option>
+                    <option value="CONFIRMED" {% if status_filter == 'CONFIRMED' %}selected{% endif %}>Успешно</option>
+                    <option value="PENDING" {% if status_filter == 'PENDING' %}selected{% endif %}>Ожидает</option>
+                    <option value="FAILED" {% if status_filter == 'FAILED' %}selected{% endif %}>Ошибка</option>
+                    <option value="CANCELLED" {% if status_filter == 'CANCELLED' %}selected{% endif %}>Отменен</option>
+                </select>
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary me-2">
+                    <i class="fas fa-filter"></i> Фильтр
+                </button>
+                <a href="{{ url_for('payments') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-times"></i> Сброс
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Таблица платежей -->
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID платежа</th>
+                        <th>Пользователь</th>
+                        <th>Сумма</th>
+                        <th>Статус</th>
+                        <th>Дата создания</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for payment in payments %}
+                    <tr>
+                        <td>
+                            <code>{{ payment.payment_id }}</code>
+                        </td>
+                        <td>
+                            {% if payment.username %}
+                                {{ payment.username }}
+                            {% else %}
+                                <span class="text-muted">{{ payment.user_id }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <strong>{{ payment.amount }}₽</strong>
+                        </td>
+                        <td>
+                            {% if payment.status == 'CONFIRMED' %}
+                                <span class="badge bg-success">Успешно</span>
+                            {% elif payment.status == 'PENDING' %}
+                                <span class="badge bg-warning">Ожидает</span>
+                            {% elif payment.status == 'FAILED' %}
+                                <span class="badge bg-danger">Ошибка</span>
+                            {% elif payment.status == 'CANCELLED' %}
+                                <span class="badge bg-secondary">Отменен</span>
+                            {% else %}
+                                <span class="badge bg-info">{{ payment.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ payment.created_at[:19] }}</td>
+                        <td>
+                            {% if payment.status == 'CONFIRMED' %}
+                                <div class="btn-group" role="group">
+                                    <button type="button" class="btn btn-sm btn-danger" 
+                                            onclick="cancelPayment('{{ payment.payment_id }}', null, '{{ payment.amount }}')">
+                                        <i class="fas fa-times"></i> Отменить
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-warning" 
+                                            onclick="showPartialCancelModal('{{ payment.payment_id }}', '{{ payment.amount }}')">
+                                        <i class="fas fa-minus"></i> Частично
+                                    </button>
+                                </div>
+                            {% elif payment.status == 'PENDING' %}
+                                <button type="button" class="btn btn-sm btn-danger" 
+                                        onclick="cancelPayment('{{ payment.payment_id }}', null, '{{ payment.amount }}')">
+                                    <i class="fas fa-times"></i> Отменить
+                                </button>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Пагинация -->
+        {% if total_pages > 1 %}
+        <nav aria-label="Навигация по страницам">
+            <ul class="pagination justify-content-center">
+                {% if page > 1 %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('payments', page=page-1, status=status_filter) }}">Предыдущая</a>
+                </li>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('payments', page=p, status=status_filter) }}">{{ p }}</a>
+                </li>
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('payments', page=page+1, status=status_filter) }}">Следующая</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Модальное окно для частичной отмены -->
+<div class="modal fade" id="partialCancelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Частичная отмена платежа</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="partialCancelForm">
+                    <div class="mb-3">
+                        <label for="cancelAmount" class="form-label">Сумма для отмены (в копейках)</label>
+                        <input type="number" class="form-control" id="cancelAmount" required min="1">
+                        <div class="form-text">Введите сумму в копейках (например, 5000 = 50₽)</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cancelReason" class="form-label">Причина отмены</label>
+                        <textarea class="form-control" id="cancelReason" rows="3" placeholder="Укажите причину отмены..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-warning" onclick="confirmPartialCancel()">Отменить частично</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentPaymentId = null;
+let currentTotalAmount = null;
+
+function showPartialCancelModal(paymentId, totalAmount) {
+    currentPaymentId = paymentId;
+    currentTotalAmount = parseInt(totalAmount) * 100; // Конвертируем в копейки
+    document.getElementById('cancelAmount').max = currentTotalAmount;
+    document.getElementById('cancelAmount').placeholder = `Максимум: ${currentTotalAmount} копеек`;
+    new bootstrap.Modal(document.getElementById('partialCancelModal')).show();
+}
+
+function confirmPartialCancel() {
+    const amount = parseInt(document.getElementById('cancelAmount').value);
+    if (!amount || amount <= 0 || amount > currentTotalAmount) {
+        alert('Введите корректную сумму для отмены');
+        return;
+    }
+    
+    cancelPayment(currentPaymentId, amount, currentTotalAmount / 100);
+    bootstrap.Modal.getInstance(document.getElementById('partialCancelModal')).hide();
+}
+
+function cancelPayment(paymentId, amount = null, totalAmount = null) {
+    const confirmMessage = amount ? 
+        `Отменить ${amount} копеек из платежа ${paymentId}?` :
+        `Полностью отменить платеж ${paymentId}?`;
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    const data = {
+        payment_id: paymentId
+    };
+    
+    if (amount !== null) {
+        data.amount = amount;
+    }
+    
+    fetch('/api/cancel_payment', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Платеж успешно отменен!');
+            location.reload();
+        } else {
+            alert('Ошибка отмены платежа: ' + (data.message || data.error));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Произошла ошибка при отмене платежа');
+    });
+}
+</script>
+{% endblock %} 

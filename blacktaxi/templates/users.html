@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}Пользователи - Админ-панель VIP бота{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">👥 Пользователи</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <span class="text-muted">Всего: {{ total }}</span>
+    </div>
+</div>
+
+<!-- Фильтры -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-4">
+                <label for="search" class="form-label">Поиск</label>
+                <input type="text" class="form-control" id="search" name="search" value="{{ search }}" placeholder="ID или username">
+            </div>
+            <div class="col-md-3">
+                <label for="vip" class="form-label">VIP статус</label>
+                <select class="form-select" id="vip" name="vip">
+                    <option value="">Все</option>
+                    <option value="vip" {% if vip_filter == 'vip' %}selected{% endif %}>VIP</option>
+                    <option value="non_vip" {% if vip_filter == 'non_vip' %}selected{% endif %}>Обычные</option>
+                </select>
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary me-2">
+                    <i class="fas fa-search"></i> Найти
+                </button>
+                <a href="{{ url_for('users') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-times"></i> Сброс
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Таблица пользователей -->
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>VIP статус</th>
+                        <th>VIP до</th>
+                        <th>Платежи</th>
+                        <th>Потрачено</th>
+                        <th>Дата регистрации</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr id="user-row-{{ user.user_id }}">
+                        <td>{{ user.user_id }}</td>
+                        <td>{{ user.username or 'N/A' }}</td>
+                        <td>
+                            {% if user.is_vip %}
+                                <span class="badge bg-success">VIP</span>
+                            {% else %}
+                                <span class="badge bg-secondary">Обычный</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if user.vip_until %}
+                                {{ user.vip_until[:10] }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>{{ user.payments_count or 0 }}</td>
+                        <td>{{ user.total_spent or 0 }}₽</td>
+                        <td>{{ user.created_at[:10] }}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button type="button" class="btn btn-outline-primary" onclick="toggleVip({{ user.user_id }})">
+                                    {% if user.is_vip %}
+                                        <i class="fas fa-user-minus"></i> Убрать VIP
+                                    {% else %}
+                                        <i class="fas fa-crown"></i> Дать VIP
+                                    {% endif %}
+                                </button>
+                                <button type="button" class="btn btn-outline-danger" onclick="deleteUser({{ user.user_id }})">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Пагинация -->
+        {% if total_pages > 1 %}
+        <nav aria-label="Навигация по страницам">
+            <ul class="pagination justify-content-center">
+                {% if page > 1 %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('users', page=page-1, search=search, vip=vip_filter) }}">Предыдущая</a>
+                </li>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('users', page=p, search=search, vip=vip_filter) }}">{{ p }}</a>
+                </li>
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('users', page=page+1, search=search, vip=vip_filter) }}">Следующая</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleVip(userId) {
+    if (!confirm('Изменить VIP статус пользователя?')) return;
+    
+    fetch(`/api/user/${userId}/toggle_vip`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert('Ошибка: ' + data.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Произошла ошибка');
+    });
+}
+
+function deleteUser(userId) {
+    if (!confirm('Удалить пользователя? Это действие нельзя отменить!')) return;
+    
+    fetch(`/api/user/${userId}/delete`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById(`user-row-${userId}`).remove();
+        } else {
+            alert('Ошибка при удалении пользователя');
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Произошла ошибка');
+    });
+}
+</script>
+{% endblock %} 

@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+
+{% block title %}Заказы такси - Админ-панель VIP бота{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">🚕 Заказы такси</h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <span class="text-muted">Всего: {{ total }}</span>
+    </div>
+</div>
+
+<!-- Фильтры -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-4">
+                <label for="search" class="form-label">Поиск</label>
+                <input type="text" class="form-control" id="search" name="search" value="{{ search }}" placeholder="Маршрут или контакт">
+            </div>
+            <div class="col-md-3">
+                <label for="status" class="form-label">Статус</label>
+                <select class="form-select" id="status" name="status">
+                    <option value="">Все статусы</option>
+                    <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Активные</option>
+                    <option value="closed" {% if status_filter == 'closed' %}selected{% endif %}>Закрытые</option>
+                </select>
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary me-2">
+                    <i class="fas fa-search"></i> Найти
+                </button>
+                <a href="{{ url_for('taxi_orders') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-times"></i> Сброс
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Таблица заказов -->
+<div class="card">
+    <div class="card-body">
+        {% if orders %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Отправитель</th>
+                        <th>Точка А</th>
+                        <th>Точка Б</th>
+                        <th>Дата/Время</th>
+                        <th>Цена</th>
+                        <th>Пассажиры</th>
+                        <th>Тип авто</th>
+                        <th>Статус</th>
+                        <th>Дата создания</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in orders %}
+                    <tr>
+                        <td>{{ order.id }}</td>
+                        <td>
+                            {% if order.sender_username %}
+                                <strong>@{{ order.sender_username }}</strong>
+                                {% if order.sender_first_name %}
+                                    <br><small class="text-muted">{{ order.sender_first_name }}{% if order.sender_last_name %} {{ order.sender_last_name }}{% endif %}</small>
+                                {% endif %}
+                            {% elif order.sender_first_name %}
+                                <strong>{{ order.sender_first_name }}{% if order.sender_last_name %} {{ order.sender_last_name }}{% endif %}</strong>
+                            {% else %}
+                                <span class="text-muted">ID: {{ order.sender_id or 'N/A' }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.route %}
+                                {% set route_parts = order.route.split(' - ') %}
+                                {% if route_parts|length >= 2 %}
+                                    <strong>{{ route_parts[0] }}</strong>
+                                {% else %}
+                                    <strong>{{ order.route }}</strong>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.route %}
+                                {% set route_parts = order.route.split(' - ') %}
+                                {% if route_parts|length >= 2 %}
+                                    <strong>{{ route_parts[1] }}</strong>
+                                {% else %}
+                                    <span class="text-muted">N/A</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                            {% if order.luggage %}
+                                <br><small class="text-muted">Багаж: {{ order.luggage }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.date %}
+                                {{ order.date }}
+                                {% if order.time %}<br>{{ order.time }}{% endif %}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.price %}
+                                <strong>{{ order.price }}₽</strong>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.passengers %}
+                                {{ order.passengers }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.vehicle_type %}
+                                <span class="badge bg-info">{{ order.vehicle_type }}</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if order.status == 'active' %}
+                                <span class="badge bg-success">Активный</span>
+                            {% elif order.status == 'closed' %}
+                                <span class="badge bg-secondary">Закрыт</span>
+                            {% else %}
+                                <span class="badge bg-warning">{{ order.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ order.created_at[:10] if order.created_at else '-' }}</td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-outline-primary" 
+                                    data-order-id="{{ order.id }}" onclick="showOrderDetails(this.dataset.orderId)">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Пагинация -->
+        {% if total_pages > 1 %}
+        <nav aria-label="Навигация по страницам">
+            <ul class="pagination justify-content-center">
+                {% if page > 1 %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('taxi_orders', page=page-1, search=search, status=status_filter) }}">Предыдущая</a>
+                </li>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('taxi_orders', page=p, search=search, status=status_filter) }}">{{ p }}</a>
+                </li>
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('taxi_orders', page=page+1, search=search, status=status_filter) }}">Следующая</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+        {% else %}
+        <div class="text-center py-5">
+            <i class="fas fa-taxi fa-3x text-muted mb-3"></i>
+            <h5 class="text-muted">Заказов такси пока нет</h5>
+            <p class="text-muted">Заказы появятся автоматически, когда в VIP группе будут отправлены сообщения о заказах такси.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Карта маршрутов -->
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+            <i class="fas fa-map-marked-alt"></i> Карта маршрутов
+        </h5>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="refreshMap()">
+            <i class="fas fa-sync-alt"></i> Обновить карту
+        </button>
+    </div>
+    <div class="card-body">
+        <div id="map" style="width: 100%; height: 500px;"></div>
+        <div class="mt-3">
+            <small class="text-muted">
+                <i class="fas fa-info-circle"></i> 
+                Карта показывает точки отправления и назначения заказов такси. 
+                Красные маркеры - точки отправления, синие - точки назначения.
+            </small>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно с деталями заказа -->
+<div class="modal fade" id="orderModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Детали заказа такси</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="orderModalBody">
+                <!-- Содержимое будет загружено динамически -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_api_key }}&lang=ru_RU" type="text/javascript"></script>
+<script>
+// Глобальные переменные
+let map;
+let markers = [];
+const ordersData = {{ orders|tojson }};
+
+// Отладочная информация
+console.log('Orders data:', ordersData);
+console.log('Orders count:', ordersData.length);
+
+// Инициализация карты
+function initMap() {
+    ymaps.ready(function () {
+        map = new ymaps.Map('map', {
+            center: [55.7558, 37.6176], // Москва по умолчанию
+            zoom: 10,
+            controls: ['zoomControl', 'fullscreenControl']
+        });
+        
+        // Загружаем маршруты на карту
+        loadRoutesOnMap();
+    });
+}
+
+// Загрузка маршрутов на карту
+function loadRoutesOnMap() {
+    console.log('Loading routes on map...');
+    console.log('Orders to process:', ordersData.length);
+    
+    ordersData.forEach((order, index) => {
+        console.log('Processing order:', order);
+        console.log('Order route:', order.route);
+        if (order.route) {
+            const routeParts = order.route.split(' - ');
+            if (routeParts.length >= 2) {
+                const pointA = routeParts[0].trim();
+                const pointB = routeParts[1].trim();
+                
+                // Геокодируем точки
+                geocodeAddress(pointA, 'A', order, index);
+                geocodeAddress(pointB, 'B', order, index);
+            }
+        }
+    });
+}
+
+// Геокодирование адреса
+function geocodeAddress(address, type, order, orderIndex) {
+    console.log('Geocoding address:', address, 'type:', type);
+    
+    ymaps.geocode(address, {
+        results: 1
+    }).then(function (res) {
+        console.log('Geocoding result for', address, ':', res);
+        if (res.geoObjects.getLength() > 0) {
+            const coords = res.geoObjects.get(0).geometry.getCoordinates();
+            const color = type === 'A' ? '#ff0000' : '#0066ff'; // Красный для А, синий для Б
+            
+            // Создаем маркер
+            const marker = new ymaps.Placemark(coords, {
+                balloonContent: `
+                    <div style="padding: 10px;">
+                        <h6>${type === 'A' ? 'Отправление' : 'Назначение'}</h6>
+                        <p><strong>Адрес:</strong> ${address}</p>
+                        <p><strong>Заказ #${order.id}</strong></p>
+                        <p><strong>Цена:</strong> ${order.price ? order.price + '₽' : 'N/A'}</p>
+                        <p><strong>Дата:</strong> ${order.date || 'N/A'}</p>
+                        <p><strong>Отправитель:</strong> ${getSenderDisplay(order)}</p>
+                    </div>
+                `
+            }, {
+                preset: 'islands#' + (type === 'A' ? 'redDotIcon' : 'blueDotIcon'),
+                iconColor: color
+            });
+            
+            markers.push(marker);
+            map.geoObjects.add(marker);
+            
+            // Центрируем карту на первом маркере
+            if (markers.length === 1) {
+                map.setCenter(coords);
+            }
+        }
+    }).catch(function (error) {
+        console.log('Ошибка геокодирования:', address, error);
+    });
+}
+
+// Очистка маркеров
+function clearMarkers() {
+    markers.forEach(marker => {
+        map.geoObjects.remove(marker);
+    });
+    markers = [];
+}
+
+// Обновление карты
+function refreshMap() {
+    clearMarkers();
+    loadRoutesOnMap();
+}
+
+// Вспомогательные функции
+function getSenderDisplay(order) {
+    if (order.sender_username) {
+        return '@' + order.sender_username;
+    } else if (order.sender_first_name) {
+        return order.sender_first_name + (order.sender_last_name ? ' ' + order.sender_last_name : '');
+    } else {
+        return 'ID: ' + (order.sender_id || 'N/A');
+    }
+}
+
+function getRoutePointB(route) {
+    if (!route) return 'N/A';
+    const parts = route.split(' - ');
+    return parts.length > 1 ? parts[1] : 'N/A';
+}
+
+function getRoutePointA(route) {
+    if (!route) return 'N/A';
+    const parts = route.split(' - ');
+    return parts.length > 1 ? parts[0] : route;
+}
+
+function showOrderDetails(orderId) {
+    const modal = new bootstrap.Modal(document.getElementById('orderModal'));
+    modal.show();
+    
+    // Загружаем детали заказа
+    fetch(`/api/taxi_order/${orderId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const order = data.order;
+                const routePointA = getRoutePointA(order.route);
+                const routePointB = getRoutePointB(order.route);
+                const senderDisplay = getSenderDisplay(order);
+                const priceDisplay = order.price ? order.price + '₽' : 'N/A';
+                
+                document.getElementById('orderModalBody').innerHTML = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Основная информация</h6>
+                            <p><strong>Отправитель:</strong> ${senderDisplay}</p>
+                            <p><strong>Точка А:</strong> ${routePointA}</p>
+                            <p><strong>Точка Б:</strong> ${routePointB}</p>
+                            <p><strong>Дата:</strong> ${order.date || 'N/A'}</p>
+                            <p><strong>Время:</strong> ${order.time || 'N/A'}</p>
+                            <p><strong>Цена:</strong> ${priceDisplay}</p>
+                            <p><strong>Пассажиры:</strong> ${order.passengers || 'N/A'}</p>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Дополнительно</h6>
+                            <p><strong>Тип авто:</strong> ${order.vehicle_type || 'N/A'}</p>
+                            <p><strong>Багаж:</strong> ${order.luggage || 'N/A'}</p>
+                            <p><strong>Доп. услуги:</strong> ${order.additional_services || 'N/A'}</p>
+                            <p><strong>Контакт:</strong> ${order.contact || 'N/A'}</p>
+                            <p><strong>Статус:</strong> ${order.status || 'N/A'}</p>
+                        </div>
+                    </div>
+                    <hr>
+                    <h6>Исходное сообщение</h6>
+                    <div class="bg-light p-3 rounded">
+                        <pre>${order.source_message || 'N/A'}</pre>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            document.getElementById('orderModalBody').innerHTML = '<p class="text-danger">Ошибка загрузки данных</p>';
+        });
+}
+
+// Инициализация карты при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+    initMap();
+});
+</script>
+{% endblock %} 

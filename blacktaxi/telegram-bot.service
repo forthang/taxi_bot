@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram VIP Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/blacktaxi/telegram-vip-bot
+Environment=PATH=/opt/blacktaxi/telegram-vip-bot/venv/bin
+ExecStart=/opt/blacktaxi/telegram-vip-bot/venv/bin/python3 bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
