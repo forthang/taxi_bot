@@ -192,7 +192,7 @@ def add_user(user_id, username):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", 
-              (user_id, username))
+            (user_id, username))
     conn.commit()
     conn.close()
 
@@ -200,9 +200,9 @@ def set_user_vip(user_id, days=30):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     c.execute("""UPDATE users 
-                 SET is_vip = 1, 
-                     vip_until = datetime('now', '+{} days')
-                 WHERE user_id = ?""".format(days), (user_id,))
+                SET is_vip = 1, 
+                    vip_until = datetime('now', '+{} days')
+                WHERE user_id = ?""".format(days), (user_id,))
     conn.commit()
     conn.close()
 
@@ -223,7 +223,7 @@ def add_payment(payment_id, user_id, amount, status='PENDING'):
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     c.execute("INSERT INTO payments (payment_id, user_id, amount, status) VALUES (?, ?, ?, ?)",
-              (payment_id, user_id, amount, status))
+            (payment_id, user_id, amount, status))
     conn.commit()
     conn.close()
 
@@ -310,6 +310,68 @@ def remove_expired_vip_users():
     
     return len(expired_users)
 
+def get_user_vip_info(user_id):
+    """(is_vip:int, vip_until:datetime|None)"""
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    c.execute("SELECT is_vip, vip_until FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return 0, None
+    is_vip, vip_until = row
+    vip_dt = datetime.fromisoformat(vip_until) if vip_until else None
+    return is_vip, vip_dt
+
+
+def get_vip_time_left(user_id):
+    """timedelta до конца VIP или None"""
+    is_vip, vip_until = get_user_vip_info(user_id)
+    if is_vip and vip_until:
+        return vip_until - datetime.now()
+    return None
+
+
+def format_time_left(delta: timedelta) -> str:
+    """Читаемое «сколько осталось»"""
+    total = int(delta.total_seconds())
+    if total <= 0:
+        return "истекла"
+    days = total // 86400
+    hours = (total % 86400) // 3600
+    minutes = (total % 3600) // 60
+    if days > 0:
+        return f"{days} д. {hours} ч."
+    if hours > 0:
+        return f"{hours} ч. {minutes} мин."
+    return f"{minutes} мин."
+
+
+def extend_user_vip(user_id, days=30):
+    """
+    Продлевает VIP на N дней от большего из (vip_until; now).
+    Если записи нет — создаёт.
+    """
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    # гарантируем, что запись есть
+    c.execute("INSERT OR IGNORE INTO users (user_id, is_vip, vip_until) VALUES (?, 0, NULL)", (user_id,))
+    # продление (добавляем к текущему vip_until, если он в будущем)
+    c.execute(f"""
+        UPDATE users
+        SET is_vip = 1,
+            vip_until = datetime(
+                CASE
+                    WHEN vip_until IS NOT NULL AND vip_until > datetime('now') THEN vip_until
+                    ELSE datetime('now')
+                END,
+                '+{days} days'
+            )
+        WHERE user_id = ?
+    """, (user_id,))
+    conn.commit()
+    conn.close()
+
 # Обработчики команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -342,18 +404,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif start_param == 'buy_vip':
             # Пользователь пришел из группы для покупки VIP
             if is_user_vip(user.id):
+                is_vip, vip_until = get_user_vip_info(user.id)
+                left = get_vip_time_left(user.id)
+                left_str = format_time_left(left) if left else "—"
+
                 keyboard = [
                     [InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)],
-                    [InlineKeyboardButton("ℹ️ О боте", callback_data='about')]
+                    [InlineKeyboardButton("♻️ Продлить на 30 дней", callback_data='buy_vip')],
+                    [InlineKeyboardButton("📊 Статус", callback_data='status')]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                
+
                 await update.message.reply_text(
                     f"Привет, {user.first_name}! 👋\n\n"
-                    "🎉 Вы уже VIP пользователь!\n\n"
-                    "💎 У вас есть доступ к эксклюзивному контенту\n"
-                    "⚡ Сообщения приходят мгновенно\n\n"
-                    "Присоединяйтесь к VIP каналу:",
+                    "🎉 У вас активен VIP!\n\n"
+                    f"📅 Действует до: {vip_until.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"⏳ Осталось: {left_str}\n\n"
+                    "⚡ Сообщения приходят мгновенно.",
                     reply_markup=reply_markup
                 )
                 return
@@ -378,20 +445,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем VIP статус
     if is_user_vip(user.id):
-        keyboard = [
-            [InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)],
-            [InlineKeyboardButton("ℹ️ О боте", callback_data='about')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"Привет, {user.first_name}! 👋\n\n"
-            "🎉 Вы уже VIP пользователь!\n\n"
-            "💎 У вас есть доступ к эксклюзивному контенту\n"
-            "⚡ Сообщения приходят мгновенно\n\n"
-            "Присоединяйтесь к VIP каналу:",
-            reply_markup=reply_markup
-        )
+                is_vip, vip_until = get_user_vip_info(user.id)
+                left = get_vip_time_left(user.id)
+                left_str = format_time_left(left) if left else "—"
+
+                keyboard = [
+                    [InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)],
+                    [InlineKeyboardButton("♻️ Продлить на 30 дней", callback_data='buy_vip')],
+                    [InlineKeyboardButton("📊 Статус", callback_data='status')]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await update.message.reply_text(
+                    f"Привет, {user.first_name}! 👋\n\n"
+                    "🎉 У вас активен VIP!\n\n"
+                    f"📅 Действует до: {vip_until.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"⏳ Осталось: {left_str}\n\n"
+                    "⚡ Сообщения приходят мгновенно.",
+                    reply_markup=reply_markup
+                )
+                
     else:
         keyboard = [
             [InlineKeyboardButton("💎 Купить VIP доступ", callback_data='buy_vip')],
@@ -470,23 +543,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = result.get('Status')
             
             if status == 'CONFIRMED':
-                # Платеж успешен
                 update_payment_status(payment_id, 'CONFIRMED')
-                set_user_vip(query.from_user.id, 30)
-                
-                # Очищаем pending payment
-                if 'pending_payment_id' in context.user_data:
-                    del context.user_data['pending_payment_id']
-                
-                keyboard = [[InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)]]
+                extend_user_vip(query.from_user.id, 30)
+
+                _, vip_until = get_user_vip_info(query.from_user.id)
+                left_str = format_time_left(vip_until - datetime.now()) if vip_until else "30 д."
+
+                keyboard = [
+                    [InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)],
+                    [InlineKeyboardButton("♻️ Продлить ещё на 30 дней", callback_data='buy_vip')],
+                ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                
+
                 await query.edit_message_text(
                     "🎉 Поздравляем!\n\n"
-                    "✅ Ваша оплата подтверждена!\n"
-                    "💎 Вам предоставлен VIP доступ на 30 дней.\n"
-                    "⚡ Теперь вы будете получать все сообщения мгновенно!\n\n"
-                    "Присоединяйтесь к VIP каналу:",
+                    "✅ Оплата подтверждена!\n"
+                    f"📅 Новый срок до: {vip_until.strftime('%d-%м-%Y')}\n"
+                    f"⏳ Осталось: {left_str}\n\n"
+                    "Спасибо за продление ✨",
                     reply_markup=reply_markup
                 )
                 
@@ -566,6 +640,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Приоритетную поддержку\n\n"
             "Стоимость: 299₽/месяц"
         )
+    
+    elif query.data == 'status':
+        is_vip, vip_until = get_user_vip_info(query.from_user.id)
+        if is_vip and vip_until:
+            left = vip_until - datetime.now()
+            text = (
+                "💎 Ваш статус VIP\n\n"
+                f"📅 Действует до: {vip_until.strftime('%d.%m.%Y %H:%M')}\n"
+                f"⏳ Осталось: {format_time_left(left)}"
+            )
+            keyboard = [
+                [InlineKeyboardButton("♻️ Продлить на 30 дней", callback_data='buy_vip')],
+                [InlineKeyboardButton("💎 VIP канал", url=VIP_CHANNEL_LINK)]
+            ]
+        else:
+            text = "У вас нет активной VIP-подписки."
+            keyboard = [[InlineKeyboardButton("💳 Купить VIP доступ", callback_data='buy_vip')]]
 
 
 
@@ -694,6 +785,85 @@ async def handle_regular_message(update: Update, context: ContextTypes.DEFAULT_T
             name=f"delayed_message_{message.message_id}"
         )
         print(f"Запланирована отправка через {MESSAGE_DELAY} секунд")
+
+async def daily_subscription_check_job(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневная задача для проверки подписок."""
+    print(f"🕐 Запускаю ежедневную проверку подписок.")
+    
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+
+    # Получаем всех пользователей из нашей БД, у кого есть активная или истекшая подписка
+    c.execute("SELECT user_id, vip_until FROM users WHERE vip_until IS NOT NULL")
+    all_vip_users = c.fetchall()
+    
+    now = datetime.now()
+
+    for user_id, vip_until_str in all_vip_users:
+        try:
+            user_vip_until = datetime.fromisoformat(vip_until_str)
+            time_left = user_vip_until - now
+            #уведы перед истчечением
+            if time_left.days >= 0:
+                if 2 <= time_left.days < 3:
+                    await context.bot.send_message(user_id, "⏰ Напоминание: Ваша VIP-подписка истекает через 3 дня. Используйте /start для продления.")
+                    print(f"Отправлено уведомление за 3 дня пользователю {user_id}")
+
+                elif 1 <= time_left.days < 2:
+                    await context.bot.send_message(user_id, "⏰ Напоминание: Ваша VIP-подписка истекает через 2 дня. Используйте /start для продления.")
+                    print(f"Отправлено уведомление за 2 дня пользователю {user_id}")
+
+                elif 0 <= time_left.days < 1:
+                    await context.bot.send_message(user_id, "‼️ Внимание: Ваша VIP-подписка истекает через 24 часа! Используйте /start, чтобы продлить ее и не потерять доступ к VIP.")
+                    print(f"Отправлено уведомление за 1 день пользователю {user_id}")
+            
+            # Обработка истекших подписок 
+            else:
+                days_since_expired = -time_left.days
+
+                # Если прошло менее 7 дней - это льготный период.
+                if 0 <= days_since_expired < 7:
+                    days_left_grace = 7 - days_since_expired
+                    await context.bot.send_message(
+                        user_id,
+                        f"❗️ Ваша VIP-подписка истекла. Мы вас удалим из группы через {days_left_grace} дней.\n\n"
+                        "Используйте /start, чтобы оплатить и остаться в группе."
+                    )
+                    print(f"Пользователь {user_id} в льготном периоде. Осталось дней: {days_left_grace}")
+
+                # Если прошло 7 или более дней - удаляем.
+                elif days_since_expired >= 7:
+                    print(f"Льготный период для {user_id} истек. Попытка удаления...")
+                    try:
+                        # Проверяем, состоит ли пользователь еще в группе, перед удалением
+                        chat_member = await context.bot.get_chat_member(chat_id=VIP_GROUP_ID, user_id=user_id)
+                        if chat_member.status not in ['left', 'kicked']:
+                            await context.bot.ban_chat_member(chat_id=VIP_GROUP_ID, user_id=user_id)
+                            await context.bot.unban_chat_member(chat_id=VIP_GROUP_ID, user_id=user_id)
+                            
+                            await context.bot.send_message(
+                                user_id,
+                                "⌛️ Ваш льготный период закончился, и вы были удалены из VIP-группы.\n\n"
+                                "Вы всегда можете вернуться, использовав команду /start и оплатив подписку."
+                            )
+                            print(f"✅ Пользователь {user_id} успешно удален из VIP-группы.")
+                        else:
+                            print(f"Пользователь {user_id} уже покинул группу.")
+
+                        # Сбрасываем VIP-статус в БД в любом случае
+                        c.execute("UPDATE users SET is_vip = 0, vip_until = NULL WHERE user_id = ?", (user_id,))
+                        
+                    except Exception as e:
+                        print(f"❌ Не удалось удалить пользователя {user_id}: {e}. Возможно, он уже вышел или бот не админ.")
+                        # Все равно сбрасываем статус, чтобы не пытаться удалить его снова
+                        c.execute("UPDATE users SET is_vip = 0, vip_until = NULL WHERE user_id = ?", (user_id,))
+
+        except Exception as e:
+            print(f"Ошибка при обработке пользователя {user_id}: {e}")
+
+    conn.commit()
+    conn.close()
+    print("✅ Ежедневная проверка подписок завершена.") 
 
 async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
     """Отправка сообщения в бесплатную группу"""
@@ -826,14 +996,16 @@ async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=FREE_GROUP_ID,
             text=f"⏰ Это сообщение было опубликовано {MESSAGE_DELAY} секунд назад в VIP группе.\n\n"
-                 "💎 Хотите получать сообщения мгновенно?\n"
-                 "👆 Нажмите кнопку выше, чтобы перейти в бота для оформления VIP доступа",
+                "💎 Хотите получать сообщения мгновенно?\n"
+                "👆 Нажмите кнопку выше, чтобы перейти в бота для оформления VIP доступа",
             reply_markup=reply_markup,
             disable_notification=True
         )
         
     except Exception as e:
         print(f"Ошибка при отправке в бесплатную группу: {e}")
+
+
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
@@ -862,11 +1034,18 @@ def main():
             interval=timedelta(hours=6),
             first=timedelta(minutes=10)  # Первый запуск через 10 минут
         )
-        print("🔄 Задача синхронизации участников группы добавлена (каждые 6 часов)")
-    
+        print("🔄 Задача синхронизации участников группы добавлена (каждые 6 часов)")   
+        application.job_queue.run_repeating(
+            daily_subscription_check_job,  
+            interval=timedelta(days=1),    
+            first=timedelta(seconds=120)    
+        )
+        print("🕐 Ежедневная задача по управлению подписками добавлена")
+
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_callback))
+
     
     # Обработчик для сообщений из каналов (channel_post)
     application.add_handler(MessageHandler(

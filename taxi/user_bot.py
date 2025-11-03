@@ -24,6 +24,10 @@ import database
 from city_config import blacklist
 from main import bot
 
+from pathlib import Path
+from datetime import timedelta
+import os, uuid
+
 forum = config.forum
 
 
@@ -57,6 +61,103 @@ client = TelegramClient(session="account/krasndr123.session",
                         )
 
 
+
+# общий путь к файлу, который видят ОБА процесса (положи в общую папку проекта)
+LIST_FILE = "list_group_online.txt"
+
+def _atomic_write_text(path, text: str, encoding: str = "utf-8"):
+    p = Path(path)  
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    # временный файл в той же папке, имя: <оригинал>.tmp.<UUID>
+    tmp = p.with_name(p.name + f".tmp.{uuid.uuid4().hex}")
+
+    with open(tmp, "w", encoding=encoding) as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(tmp, p)
+
+async def _iter_all_dialogs(client):
+    # основной список
+    async for d in client.iter_dialogs(limit=None):
+        yield d
+    # архив
+    async for d in client.iter_dialogs(limit=None, archived=True):
+        yield d
+
+
+async def collect_user_channels_and_groups(client) -> list[str]:
+    """
+    Возвращает строки:
+      - публичный канал:  '📣 Название — https://t.me/username'
+      - приватный канал:  '🔒 Название — приватный канал'
+      - публичная группа: '👥 Название — https://t.me/username'
+      - приватная группа: '🔐 Название — приватная группа'
+    Учитываем: broadcast (каналы), megagroup (супергруппы), Chat (обычные группы).
+    Охватываем и архив.
+    """
+    lines = []
+    seen_ids = set()
+
+    async for dialog in _iter_all_dialogs(client):
+        ent = dialog.entity
+
+        # Каналы/Супергруппы
+        if isinstance(ent, types.Channel):
+            if ent.id in seen_ids:
+                continue
+            seen_ids.add(ent.id)
+
+            title = (ent.title or "").strip() or "(без названия)"
+            username = getattr(ent, "username", None)
+
+            if getattr(ent, "broadcast", False):
+                # канал
+                if username:
+                    lines.append(f"📣 {title} — https://t.me/{username}")
+                else:
+                    lines.append(f"🔒 {title} — приватный канал")
+            elif getattr(ent, "megagroup", False):
+                # супергруппа
+                if username:
+                    lines.append(f"👥 {title} — https://t.me/{username}")
+                else:
+                    lines.append(f"🔐 {title} — приватная группа")
+
+        # Обычные группы (устаревший тип)
+        elif isinstance(ent, types.Chat):
+            if ent.id in seen_ids:
+                continue
+            seen_ids.add(ent.id)
+
+            title = (ent.title or "").strip() or "(без названия)"
+            username = getattr(ent, "username", None)
+            if username:
+                lines.append(f"👥 {title} — https://t.me/{username}")
+            else:
+                lines.append(f"🔐 {title} — приватная группа")
+
+    # сортируем и убираем дубли по тексту
+    lines = sorted(list(dict.fromkeys(lines)), key=str.casefold)
+    return lines
+
+
+async def update_channels_list_file(client):
+    try:
+        lines = await collect_user_channels_and_groups(client)
+        if not lines:
+            me = await client.get_me()
+            text = "Каналы/группы не найдены." 
+        else:
+            text = "\n".join(lines)
+
+        _atomic_write_text(LIST_FILE, text)
+        logging.info("list_group_online.txt обновлён: %s записей", len(lines))
+    except Exception as e:
+        logging.exception("Ошибка при обновлении списка: %s", e)
+        _atomic_write_text(LIST_FILE, f"Не удалось сформировать список: {e}")
 
 #  Оповещение для юзера который это включил
 async def send_user_notif(district, message):
@@ -342,6 +443,16 @@ async def telebot():
     # if me:
         # logging.INFO(f"Юзер бот запущен: {me.username}")
         # print("Юзер бот запущен!")
+
+    await update_channels_list_file(client)
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(update_channels_list_file, "interval", hours=24, args=[client],)
+
+    scheduler.start()
+
+
+
+
     users = await client.get_participants(config.forum)
     all_users = []
     for user in users:

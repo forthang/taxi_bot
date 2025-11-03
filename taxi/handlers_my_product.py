@@ -118,6 +118,23 @@ async def url_buttons(callback: CallbackQuery, bot: Bot):
                 await bot.send_message(chat_id=user_id,
                                        text=list_group, disable_web_page_preview=True,
                                        protect_content=True)
+            #                 try:
+            #     p = Path(LIST_FILE)
+            #     if not p.exists():
+            #         text = "Список ещё не сформирован. Попробуйте позже."
+            #     else:
+            #         text = p.read_text(encoding="utf-8").strip() or "Каналы не найдены."
+            # except Exception as e:
+            #     text = f"Не удалось прочитать список: {e}"
+
+            # for part in _split_text(text):
+            #     await bot.send_message(
+            #         chat_id=int(user_id),
+            #         text=part,
+            #         disable_web_page_preview=True,
+            #         protect_content=True
+            #     )
+                
 
         else:
             await callback.answer(text="Доступно в VIP подписке")
@@ -146,10 +163,13 @@ async def url_buttons(callback: CallbackQuery, bot: Bot):
 # Нажатие на выбор города для получения оповещений
 @my_product_handler.callback_query(AdminFSM.add_notif_city)
 async def add_notif(callback: CallbackQuery, bot: Bot, state: FSMContext):
+
     try:
+
         data_city = callback.data
         user_id = str(callback.from_user.id)
         database.add_notif(user_id, data_city)
+        
         m = await bot.send_message(chat_id=user_id, text=f"Вы включили оповещения о новых заказах. "
                                                          f"Как только появится заказ, я его сразу вам отправлю.\n"
                                                          f"Отключить оповещения: <b>/stop</b>",
