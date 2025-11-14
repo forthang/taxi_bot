@@ -22,7 +22,7 @@ VIP_GROUP_ID = int(os.getenv('VIP_GROUP_ID'))
 SERVER_URL = os.getenv('SERVER_URL')
 MESSAGE_DELAY = int(os.getenv('MESSAGE_DELAY', 30))
 VIP_PRICE = int(os.getenv('VIP_PRICE', 299))
-VIP_CHANNEL_LINK = os.getenv('VIP_CHANNEL_LINK', 'https://t.me/+_dDvcqpbtKJhYjNi')
+VIP_CHANNEL_LINK = os.getenv('VIP_CHANNEL_LINK', 'https://t.me/+JJiPdE2FK0M3ZDAy')
 
 # Инициализация базы данных
 def init_db():
@@ -865,6 +865,9 @@ async def daily_subscription_check_job(context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     print("✅ Ежедневная проверка подписок завершена.") 
 
+
+
+
 async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
     """Отправка сообщения в бесплатную группу"""
     message = context.job.data['message']
@@ -997,6 +1000,7 @@ async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
             chat_id=FREE_GROUP_ID,
             text=f"⏰ Это сообщение было опубликовано {MESSAGE_DELAY} секунд назад в VIP группе.\n\n"
                 "💎 Хотите получать сообщения мгновенно?\n"
+                f"{VIP_CHANNEL_LINK}\n"
                 "👆 Нажмите кнопку выше, чтобы перейти в бота для оформления VIP доступа",
             reply_markup=reply_markup,
             disable_notification=True
@@ -1042,6 +1046,9 @@ def main():
         )
         print("🕐 Ежедневная задача по управлению подписками добавлена")
 
+        
+
+        #application.job_queue.run_repeating(purge_expired_vip_users_job, interval=timedelta(days=1), first=timedelta(minutes=1))
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_callback))

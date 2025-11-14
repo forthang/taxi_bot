@@ -70,11 +70,7 @@ copy_main_files() {
     
     # Установщики и документация
     cp install.sh "$ARCHIVE_DIR/"
-    cp quick_install.sh "$ARCHIVE_DIR/"
-    cp ARCHIVE_README.md "$ARCHIVE_DIR/"
-    cp INSTALLATION_GUIDE.md "$ARCHIVE_DIR/"
-    cp QUICK_START.md "$ARCHIVE_DIR/"
-    cp README.md "$ARCHIVE_DIR/"
+    cp quick_install.sh "$ARCHIVE_DIR/"  
     
     # Systemd сервисы
     cp telegram-bot.service "$ARCHIVE_DIR/"
@@ -154,7 +150,7 @@ create_archive() {
     tar -czf "$ARCHIVE_NAME" telegram-vip-bot/
     
     # Перемещаем архив в текущую директорию
-    mv "$ARCHIVE_NAME" "/opt/dmitriy/telegram-vip-bot/"
+    mv "$ARCHIVE_NAME" "/opt/blacktaxi/telegram-vip-bot/"
     
     print_message "Архив создан: $ARCHIVE_NAME"
     print_message "Размер архива: $(du -h "/opt/dmitriy/telegram-vip-bot/$ARCHIVE_NAME" | cut -f1)"
