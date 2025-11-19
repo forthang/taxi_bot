@@ -22,7 +22,7 @@ async def my_product(callback: CallbackQuery, bot: Bot):
             m = await bot.send_message(chat_id=user_id,
                                        text=
                                             f"Выберите округ или включите оповещения о новых заказах\n"
-                                            f"➡️ <a href='https://t.me/+dP6FgtKdMi9mNWZi'><b>Вступите в группу</b></a>",
+                                            f"➡️ <a href='https://t.me/+S9gUE9p2rHxmOTdi'><b>Вступите в группу</b></a>",
                                        reply_markup=kb.states()
                                        )
             await bot.delete_message(chat_id=user_id,
@@ -36,7 +36,7 @@ async def my_product(callback: CallbackQuery, bot: Bot):
             m = await bot.send_message(chat_id=user_id,
                                        text=f"{database.date_product(user_id)}\n\n"
                                             f"Выберите округ или включите оповещения о новых заказах\n"
-                                            f"➡️ <a href='https://t.me/+dP6FgtKdMi9mNWZi'><b>Вступите в группу</b></a>",
+                                            f"➡️ <a href='https://t.me/+S9gUE9p2rHxmOTdi'><b>Вступите в группу</b></a>",
                                        reply_markup=kb.states()
                                        )
             await bot.delete_message(chat_id=user_id,
@@ -110,31 +110,40 @@ async def url_buttons(callback: CallbackQuery, bot: Bot):
 Каталог актуальных ссылок регулярно обновляется
 
 При отсутствии желаемого сообщества в списке рекомендуется направить запрос в службу поддержки для получения актуальной информации.
-
             """)
-
-            with open("list_group.txt", "r") as f:
-                list_group = f.read()
-                await bot.send_message(chat_id=user_id,
-                                       text=list_group, disable_web_page_preview=True,
-                                       protect_content=True)
-            #                 try:
-            #     p = Path(LIST_FILE)
-            #     if not p.exists():
-            #         text = "Список ещё не сформирован. Попробуйте позже."
-            #     else:
-            #         text = p.read_text(encoding="utf-8").strip() or "Каналы не найдены."
-            # except Exception as e:
-            #     text = f"Не удалось прочитать список: {e}"
-
-            # for part in _split_text(text):
-            #     await bot.send_message(
-            #         chat_id=int(user_id),
-            #         text=part,
-            #         disable_web_page_preview=True,
-            #         protect_content=True
-            #     )
+            
+            try:
+                with open("list_group_online.txt", "r", encoding="utf-8") as f:
+                    list_group = f.read().strip()
                 
+                if not list_group:
+                    await bot.send_message(chat_id=user_id, text="Каналы и группы не найдены или список еще не сформирован.")
+                    return
+
+                # Разделяем сообщение на части, если оно слишком длинное для Telegram
+                # (лимит 4096 символов)
+                # Мы будем отправлять по ~4000 символов, чтобы иметь запас
+                parts = []
+                current_part = ""
+                for line in list_group.split('\n'):
+                    if len(current_part) + len(line) < 4000:
+                        current_part += line + '\n'
+                    else:
+                        parts.append(current_part)
+                        current_part = line + '\n'
+                parts.append(current_part)
+                
+                for part in parts:
+                    if part.strip(): # Отправляем, только если часть не пустая
+                        await bot.send_message(chat_id=user_id,
+                                               text=part, 
+                                               disable_web_page_preview=True,
+                                               protect_content=True)
+            except FileNotFoundError:
+                await bot.send_message(chat_id=user_id, text="Список групп еще не сформирован. Пожалуйста, попробуйте позже.")
+            except Exception as e:
+                print(e)
+                await bot.send_message(chat_id=user_id, text=f"Произошла ошибка при чтении списка групп: {e}")
 
         else:
             await callback.answer(text="Доступно в VIP подписке")

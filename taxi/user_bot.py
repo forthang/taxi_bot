@@ -91,9 +91,9 @@ async def _iter_all_dialogs(client):
 async def collect_user_channels_and_groups(client) -> list[str]:
     """
     Возвращает строки:
-      - публичный канал:  '📣 Название — https://t.me/username'
+      - публичный канал:  '📣 <a href='https://t.me/username'>Название</a>'
       - приватный канал:  '🔒 Название — приватный канал'
-      - публичная группа: '👥 Название — https://t.me/username'
+      - публичная группа: '👥 <a href='https://t.me/username'>Название</a>'
       - приватная группа: '🔐 Название — приватная группа'
     Учитываем: broadcast (каналы), megagroup (супергруппы), Chat (обычные группы).
     Охватываем и архив.
@@ -111,18 +111,20 @@ async def collect_user_channels_and_groups(client) -> list[str]:
             seen_ids.add(ent.id)
 
             title = (ent.title or "").strip() or "(без названия)"
+            # Экранируем HTML-символы в названии, чтобы избежать проблем с разметкой
+            title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             username = getattr(ent, "username", None)
 
             if getattr(ent, "broadcast", False):
                 # канал
                 if username:
-                    lines.append(f"📣 {title} — https://t.me/{username}")
+                    lines.append(f"📣 <a href='https://t.me/{username}'>{title}</a>")
                 else:
                     lines.append(f"🔒 {title} — приватный канал")
             elif getattr(ent, "megagroup", False):
                 # супергруппа
                 if username:
-                    lines.append(f"👥 {title} — https://t.me/{username}")
+                    lines.append(f"👥 <a href='https://t.me/{username}'>{title}</a>")
                 else:
                     lines.append(f"🔐 {title} — приватная группа")
 
@@ -133,9 +135,10 @@ async def collect_user_channels_and_groups(client) -> list[str]:
             seen_ids.add(ent.id)
 
             title = (ent.title or "").strip() or "(без названия)"
+            title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             username = getattr(ent, "username", None)
             if username:
-                lines.append(f"👥 {title} — https://t.me/{username}")
+                lines.append(f"👥 <a href='https://t.me/{username}'>{title}</a>")
             else:
                 lines.append(f"🔐 {title} — приватная группа")
 

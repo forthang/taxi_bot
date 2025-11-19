@@ -798,7 +798,7 @@ async def daily_subscription_check_job(context: ContextTypes.DEFAULT_TYPE):
     all_vip_users = c.fetchall()
     
     now = datetime.now()
-
+    
     for user_id, vip_until_str in all_vip_users:
         try:
             user_vip_until = datetime.fromisoformat(vip_until_str)
@@ -999,8 +999,8 @@ async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=FREE_GROUP_ID,
             text=f"⏰ Это сообщение было опубликовано {MESSAGE_DELAY} секунд назад в VIP группе.\n\n"
-                "💎 Хотите получать сообщения мгновенно?\n"
-                f"{VIP_CHANNEL_LINK}\n"
+                "💎 Хотите получать сообщения мгновенно?\n\n"
+                "@VipTaxiPrivat_bot\n\n"
                 "👆 Нажмите кнопку выше, чтобы перейти в бота для оформления VIP доступа",
             reply_markup=reply_markup,
             disable_notification=True
@@ -1010,11 +1010,33 @@ async def send_to_free_group(context: ContextTypes.DEFAULT_TYPE):
         print(f"Ошибка при отправке в бесплатную группу: {e}")
 
 
+    
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
     print(f"Произошла ошибка: {context.error}")
     print(f"Update: {update}")
+
+
+async def send_startup_message_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Задача, отправляющая разовое сообщение пользователю при запуске бота.
+    Данные (user_id, text) передаются через context.job.data.
+    """
+    job_data = context.job.data
+    user_id = job_data.get('user_id')
+    text = job_data.get('text')
+
+    if not user_id or not text:
+        print("❌ Ошибка в задаче send_startup_message_job: user_id или text не предоставлены.")
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=text)
+        print(f"✅ Сообщение о запуске успешно отправлено пользователю с ID {user_id}")
+    except Exception as e:
+        print(f"❌ Не удалось отправить сообщение о запуске пользователю с ID {user_id}. Ошибка: {e}")
+
 
 def main():
     # Инициализируем БД
@@ -1022,6 +1044,7 @@ def main():
     
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
+
     
     # Добавляем периодическую задачу для проверки истекших VIP статусов (каждый час)
     if application.job_queue:
@@ -1042,7 +1065,7 @@ def main():
         application.job_queue.run_repeating(
             daily_subscription_check_job,  
             interval=timedelta(days=1),    
-            first=timedelta(seconds=120)    
+            first=timedelta(seconds=30)    
         )
         print("🕐 Ежедневная задача по управлению подписками добавлена")
 

@@ -2,8 +2,8 @@
 token = "7677320607:AAGc5fOuQ67hB0q7nITo0AhcxpECvt0gZlI"  #"6910599438:AAH6No1oVPliDfm7Jj5FPxdiF8ZUr6lJJWc"
 # Transfer_GPT old:  7677320607:AAFFMSx_8fKWUMjBK_xPIPKtv7Zsa4YDFOI
 forum = -1002399917728 # Платная группа
-url = 'https://t.me/+dP6FgtKdMi9mNWZi' # По заявке. Бот проверяет наличие подписки и одобряет если ок
-admins = ["6084765842", "1182497608"]
+url = 'https://t.me/+S9gUE9p2rHxmOTdi' # По заявке. Бот проверяет наличие подписки и одобряет если ок
+admins = ["6084765842", "1182497608", "8357184970"]
 
 vip = "499" #  Цена за ВИП
 premium = "999" # Цена за Премиум
