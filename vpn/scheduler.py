@@ -50,7 +50,6 @@ async def run_notifications(bot: Bot):
     # --- ШАГ 1: Синхронизация дат ---
     logger.info("SCHEDULER: Начало синхронизации дат подписок с панелью.")
     try:
-        # ДОБАВЛЕН AWAIT
         active_users_in_db = await get_all_active_users_for_sync()
         logger.info(f"SCHEDULER_SYNC: Найдено {len(active_users_in_db)} активных пользователей в локальной БД для проверки.")
         
@@ -69,7 +68,6 @@ async def run_notifications(bot: Bot):
                                 # Fallback если формат другой
                                 panel_date = datetime.strptime(expire_str.split('.')[0], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
 
-                            # ДОБАВЛЕН AWAIT
                             await sync_subscription_date(user_id, panel_date, current_time)
                         else:
                             logger.warning(f"SCHEDULER_SYNC: Пользователь {username} не найден в панели, но активен в БД.")
@@ -104,13 +102,11 @@ async def run_notifications(bot: Bot):
 
     # Уведомления об истечении
     try:
-        # ДОБАВЛЕН AWAIT
         users_to_notify = await get_subscriptions_to_notify()
         logger.info(f"SCHEDULER_NOTIFY: Найдено {len(users_to_notify)} пользователей для уведомления об истечении подписки.")
         for (user_id,) in users_to_notify:
             try:
                 await bot.send_message(chat_id=user_id, text=EXPIRATION_TEXT, reply_markup=keyboard)
-                # ДОБАВЛЕН AWAIT
                 await mark_subscription_as_expired(user_id)
                 logger.info(f"SCHEDULER_NOTIFY: Отправлено уведомление об истечении подписки пользователю {user_id}.")
             except (Forbidden, BadRequest) as e:

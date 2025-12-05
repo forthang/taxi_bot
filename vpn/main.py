@@ -594,24 +594,51 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             tariff_info = TARIFFS[action]
             description = f"{tariff_info['description']} (ID: {user_id})"
             
-            # Создаем платеж (без обращения к БД, т.к. Yookassa SDK сам по себе)
-            payment = Payment.create({
+            # --- ИСПРАВЛЕНИЕ: Добавлен объект receipt ---
+            payment_data = {
                 "amount": {"value": f"{tariff_info['price']:.2f}", "currency": "RUB"},
                 "confirmation": {"type": "redirect", "return_url": f"https://t.me/{(await context.bot.get_me()).username}"},
                 "capture": True,
                 "description": description,
-                "metadata": {'user_id': user_id, 'tariff_callback': action}
-            }, uuid.uuid4())
-            
-            payment_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Оплатить", url=payment.confirmation.confirmation_url)]])
-            
-            await query.edit_message_text(
-                f"Вы выбрали: *{tariff_info['description']}*.\n"
-                f"Сумма к оплате: *{tariff_info['price']} ₽*.\n\n"
-                f"Нажмите кнопку ниже для перехода к оплате. Доступ активируется автоматически после успешного платежа.",
-                reply_markup=payment_markup,
-                parse_mode=ParseMode.MARKDOWN
-            )
+                "metadata": {'user_id': user_id, 'tariff_callback': action},
+                "receipt": {
+                    "customer": {
+                        # ЮКасса требует почту для отправки чека. 
+                        # Т.к. мы ее не знаем, генерируем техническую почту на основе ID.
+                        "email": f"user_{user_id}@telegram.bot" 
+                    },
+                    "items": [
+                        {
+                            "description": tariff_info['description'],
+                            "quantity": "1.00",
+                            "amount": {
+                                "value": f"{tariff_info['price']:.2f}",
+                                "currency": "RUB"
+                            },
+                            "vat_code": 1, # ВАЖНО: 1 - это НДС 20%. Если у вас "Без НДС" или УСН, поставьте код 4 или другой, соответствующий вашей налоговой.
+                            "payment_mode": "full_payment",
+                            "payment_subject": "service" # Мы продаем услугу
+                        }
+                    ]
+                }
+            }
+
+            # Создаем платеж
+            try:
+                payment = Payment.create(payment_data, uuid.uuid4())
+                
+                payment_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Оплатить", url=payment.confirmation.confirmation_url)]])
+                
+                await query.edit_message_text(
+                    f"Вы выбрали: *{tariff_info['description']}*.\n"
+                    f"Сумма к оплате: *{tariff_info['price']} ₽*.\n\n"
+                    f"Нажмите кнопку ниже для перехода к оплате. Доступ активируется автоматически после успешного платежа.",
+                    reply_markup=payment_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при создании платежа ЮКасса: {e}")
+                await query.answer("Ошибка при создании счета. Попробуйте позже.", show_alert=True)
 
     # --- Обработка Пользовательских кнопок ---
     
