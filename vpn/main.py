@@ -147,20 +147,34 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def safe_parse_datetime(date_obj: Union[str, datetime, None]) -> datetime:
-    """Парсит дату из SQLite (строка) или возвращает текущую."""
+    """
+    Универсальный парсер даты.
+    Работает и с объектами datetime (Postgres), и со строками (SQLite).
+    """
     if not date_obj:
         return datetime.now(timezone.utc)
     
-    # На случай если где-то проскочит объект
+    # Если это уже объект datetime (редко в SQLite, но бывает)
     if isinstance(date_obj, datetime):
         return date_obj if date_obj.tzinfo else date_obj.replace(tzinfo=timezone.utc)
 
+    # Если это строка (стандарт для SQLite)
     try:
-        # SQLite хранит как '2023-10-10 12:00:00' или '2023-10-10 12:00:00+00:00'
-        clean = str(date_obj).split('.')[0].split('+')[0].replace('T', ' ').strip()
-        return datetime.strptime(clean, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-    except Exception as e:
-        logger.error(f"Date parse error: {e}")
+        # SQLite обычно возвращает: "2023-12-05 21:00:00.123456" или "2023-12-05 21:00:00"
+        # 1. Убираем +00:00 (если есть)
+        # 2. Убираем букву T (если есть)
+        # 3. Обрезаем миллисекунды (все, что после точки), чтобы формат был единым
+        clean_str = str(date_obj).split('+')[0].replace('T', ' ').split('.')[0].strip()
+        
+        # Парсим по формату "Год-Месяц-День Час:Минута:Секунда"
+        dt = datetime.strptime(clean_str, '%Y-%m-%d %H:%M:%S')
+        
+        # Добавляем временную зону UTC
+        return dt.replace(tzinfo=timezone.utc)
+        
+    except (ValueError, IndexError, AttributeError) as e:
+        logger.error(f"Date parse error for value '{date_obj}': {e}")
+        # В случае ошибки возвращаем текущее время, чтобы не крашить бота
         return datetime.now(timezone.utc)
 
 def format_bytes(size: float) -> str:
@@ -219,12 +233,15 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
     try:
         # Шаг 1: Работа с API Remnawave
         username_in_panel = f"tg_{user_id}"
-        old_sub_data = await get_any_subscription(user_id) # AWAIT
+        old_sub_data = await get_any_subscription(user_id) 
+        
         start_from = datetime.now(timezone.utc)
         
-        # Если есть активная или будущая подписка, продлеваем от её конца
+        # Если подписка найдена, пробуем распарсить дату окончания
         if old_sub_data and old_sub_data[1]:
             current_end_date = safe_parse_datetime(old_sub_data[1])
+            
+            # Если текущая подписка еще не истекла, продлеваем с её конца
             if current_end_date > start_from:
                 start_from = current_end_date
         
