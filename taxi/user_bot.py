@@ -1,396 +1,276 @@
 import asyncio
 import itertools
 import json
-import random
-import time
-import re
-
-from aiogram.fsm.context import FSMContext
-from aiogram.types import FSInputFile
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telethon.tl import functions, types
-from telethon.sync import TelegramClient, events
-from telethon.tl import functions, types
-from telethon.tl.functions.account import UpdateUsernameRequest
-from telethon.tl.functions.messages import GetMessagesViewsRequest, GetDialogsRequest, DeleteHistoryRequest
-from telethon.tl.functions.stories import SendStoryRequest
-from telethon.tl.types import SendMessageTypingAction, InputMediaUploadedPhoto
-from aiogram import Bot
 import logging
-from telethon.extensions.html import HTMLParser
+import html
+import re  # Для очистки текста при сравнении
+from aiogram import Bot
+from telethon import TelegramClient, events
+from telethon.tl import types
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import city_config
 import config
 import database
-from city_config import blacklist
 from main import bot
 
+# --- КОНФИГУРАЦИЯ ---
 forum = config.forum
+LIST_FILE = "list_group_online.txt"
+HISTORY_SIZE = 30 # Помним последние 30 заказов (чтобы точно ловить дубли)
 
+# Глобальные переменные
+titles_cache = {}  
+mess_history = []  # Список словарей: [{'msg_id':..., 'hash':..., 'text':..., 'authors':[]}]
+msg_queue = asyncio.Queue()  
 
-# Номера веток группы
-cities = {
-    "Центральный": 26,
-    "ЛДНР": 74,
-    "Запорожье и Херсон": 75,
-    "Северо-Кавказский": 35,
-    "Северо-Западный": 28,
-    "Поволжье": 78,
-    "Южный": 79,
-    "Приволжский": 80,
-    "Уральский": 82,
-    "Сибирский": 32,
-    "Дальневосточный": 78
-}
-
+# Загрузка конфига
 json_file = "account/krasndr123.json"
 with open(json_file, "r", encoding="utf-8") as f:
     json_data = json.load(f)
 
-client = TelegramClient(session="account/krasndr123.session",
-                        api_id=json_data["app_id"],
-                        api_hash=json_data["app_hash"],
-                        device_model=json_data["device"],
-                        system_version=json_data["sdk"],
-                        app_version=json_data["app_version"],
-                        system_lang_code=json_data["system_lang_code"],
-                        lang_code=json_data["lang_code"],
-                        )
+# --- КЛИЕНТ (ТУРБО РЕЖИМ) ---
+client = TelegramClient(
+    session="account/krasndr123.session",
+    api_id=json_data["app_id"],
+    api_hash=json_data["app_hash"],
+    device_model=json_data["device"],
+    system_version=json_data["sdk"],
+    app_version=json_data["app_version"],
+    system_lang_code=json_data["system_lang_code"],
+    lang_code=json_data["lang_code"],
+    sequential_updates=False 
+)
 
+# Логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler()]
+)
 
+# Функция для создания "слепка" текста (убираем смайлы, пробелы, регистр)
+def get_text_hash(text):
+    # Оставляем только буквы и цифры
+    return "".join(filter(str.isalnum, text.lower()))[:100]
 
-#  Оповещение для юзера который это включил
+# --- ВОРКЕР (ОТПРАВЩИК) ---
+async def worker():
+    print("🚀 Воркер запущен и ждет заказы...")
+    while True:
+        task = await msg_queue.get()
+        try:
+            text, id_group, mess_id, title, district = task
+            await send_to_main_branch(text, id_group, mess_id, title, district)
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            print(f"Ошибка в воркере: {e}")
+        finally:
+            msg_queue.task_done()
+
+# --- ФУНКЦИЯ ОТПРАВКИ И РЕДАКТИРОВАНИЯ ---
+async def send_to_main_branch(text, id_group, mess_id, title, district):
+    global mess_history
+    
+    # Подготовка данных
+    safe_title = html.escape(title)
+    # Ссылка без -100
+    clean_group_id = str(id_group).replace("-100", "")
+    url = f'<a href="https://t.me/c/{clean_group_id}/{mess_id}">➡️ <b>{safe_title}</b></a>'
+    
+    # Формируем полный текст (он нужен, если это будет новое сообщение)
+    full_message = f"{text}\n\nИнформация:\n{url}"
+    
+    # Создаем хеш для сравнения (чистый текст заказа)
+    current_hash = get_text_hash(text)
+
+    # Уведомление юзеру
+    asyncio.create_task(send_user_notif(district, full_message))
+
+    try:
+        # 1. Ищем дубль в истории
+        found_item = None
+        for item in mess_history:
+            if item['hash'] == current_hash:
+                found_item = item
+                break
+        
+        if found_item:
+            # --- ЭТО ДУБЛЬ ---
+            
+            # Если этот канал уже есть в списке авторов этого сообщения -> выходим
+            if safe_title in found_item['authors']:
+                return
+
+            print(f"✏️ Редактируем заказ (добавляем {safe_title})")
+            
+            # Берем старый текст (с уже накопленными ссылками) и добавляем новую
+            new_text_body = f"{found_item['text']}\n{url}"
+            
+            # Редактируем сообщение в канале
+            await bot.edit_message_text(chat_id=forum,
+                                        text=new_text_body,
+                                        message_id=found_item['msg_id'],
+                                        parse_mode="HTML",
+                                        disable_web_page_preview=True)
+            
+            # Обновляем данные в памяти
+            found_item['text'] = new_text_body
+            found_item['authors'].append(safe_title)
+            
+            # Перемещаем сообщение в конец списка (как самое свежее), чтобы оно дольше жило в кеше
+            mess_history.remove(found_item)
+            mess_history.append(found_item)
+
+        else:
+            # --- ЭТО НОВЫЙ ЗАКАЗ ---
+            print(f"📩 Новый заказ ({safe_title})")
+            
+            m = await bot.send_message(chat_id=forum,
+                                       text=full_message,
+                                       message_thread_id=177,
+                                       parse_mode="HTML",
+                                       disable_web_page_preview=True)
+            
+            # Добавляем в историю
+            new_item = {
+                'msg_id': m.message_id,
+                'hash': current_hash,
+                'text': full_message,   # Храним текст ВМЕСТЕ со ссылками
+                'authors': [safe_title] # Список каналов, которые запостили это
+            }
+            mess_history.append(new_item)
+            
+            # Если история переполнилась, удаляем самый старый элемент
+            if len(mess_history) > HISTORY_SIZE:
+                mess_history.pop(0)
+
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
+
 async def send_user_notif(district, message):
-    # Находим Юзера с этим городом и отправляем ему заказ
     try:
         user_id = database.get_notif_user_city(district)
         if user_id:
-            await bot.send_message(chat_id=user_id,
-                                   text=message)
-    except Exception as e:
-        try:
-            user_id = database.get_notif_user_city(district)
-            res = database.del_user(str(user_id))
-            await bot.send_message(chat_id="-1002451573337",  # Error logs| Exception
-                                   text=f"<b>send_user_notif:</b> {str(e)}\n"
-                                        f"Delete: {res}")
-        except Exception as e:
-            await bot.send_message(chat_id="-1002451573337",  # Error logs| Exception
-                                   text=f"<b>send_user_notif:</b> {str(e)}\n"
-                                        )
+            await bot.send_message(chat_id=user_id, text=message)
+    except Exception:
+        pass 
 
-
-mess_group_primary = []
-mess_select_group = []
-#   Отправляем заказ в общую и нужную ветку
-async def send_group(text, branch, id_group, mess_id, title, district):
-    global mess_group_primary
-    global mess_select_group
-
-    #  Тестирование
-
-    url = f'<a href="https://t.me/c/{id_group}/{mess_id}">➡️ <b>{title}</b></a>'
-    message = f"{text}\n\nИнформация:\n{url}"
-    await send_user_notif(district, message)
-    try:
-        srez = message[:30]
-        #  Все заказы
-        if branch == 177:
-            if mess_group_primary:
-                if mess_group_primary[1] == srez:  # Если одинаково, то редактируем
-                    print("Попал в редактирование все заказы")
-                    new_mess = f"{mess_group_primary[2]}\n{url}"
-                    await bot.edit_message_text(chat_id=forum,
-                                                text=new_mess,
-                                                message_id=mess_group_primary[0])
-                    mess_group_primary[2] = new_mess
-
-                else:
-                    print("Новый заказ")
-                    m = await bot.send_message(chat_id=forum,
-                                               text=message,
-                                               message_thread_id=branch
-                                               )
-                    print(m.message_id)
-                    mess_group_primary[0] = m.message_id
-                    mess_group_primary[1] = srez
-                    mess_group_primary[2] = message
-            else:
-                print("Впервые во все заказы")
-                m = await bot.send_message(chat_id=forum,
-                                           text=message,
-                                           message_thread_id=branch
-                                           )
-                print(m.message_id)
-                mess_group_primary.append(m.message_id)
-                mess_group_primary.append(srez)
-                mess_group_primary.append(message)
-        # Вторичная ветка
-        else:
-            if mess_select_group:
-                #  Если срез совпал, начинаем работу с ветками
-                if mess_select_group[1] == srez:
-                    print("Срез совпал")
-                    # Если одинаково, то редактируем. 1 ветка
-                    if mess_select_group[3] == branch and not title == mess_select_group[7]:
-                        print("Попал в редактирование 1 ветки")
-                        new_mess = f"{mess_select_group[2]}\n{url}"
-                        await bot.edit_message_text(chat_id=forum,
-                                                    text=new_mess,
-                                                    message_id=mess_select_group[0]) # 100
-                        mess_select_group[2] = new_mess
-                        mess_select_group[7] = title
-
-                    # Если одинаково, то редактируем. 2 ветка
-                    elif mess_select_group[4] == branch: # branch 2 ветки
-                        print("Попал в редактирование ветки 2")
-                        print(title)
-                        print(mess_select_group[8])
-                        if not title == mess_select_group[8]:
-                            new_mess = f"{mess_select_group[6]}\n{url}"
-                            await bot.edit_message_text(chat_id=forum,
-                                                        text=new_mess,
-                                                        message_id=mess_select_group[5])
-                            mess_select_group[6] = new_mess
-                            mess_select_group[8] = title
-                        else:
-                            return
-                    else:
-                        print("Новый пост ветки 2")
-                        m = await bot.send_message(chat_id=forum,
-                                                   text=message,
-                                                   message_thread_id=branch)
-                        #  Второй бранч
-                        mess_select_group[4] = branch
-                        mess_select_group[5] = m.message_id
-                        mess_select_group[8] = title
-                        return
-                #  Если в mess_select_group есть, но срез не совпал
-                else:
-                    print("Новый 1 пост 2 ветки")
-                    m = await bot.send_message(chat_id=forum,
-                                               text=message,
-                                               message_thread_id=branch
-                                               )
-
-                    mess_select_group.append(m.message_id)  # id первой ветки [0]
-                    mess_select_group.append(srez)  # [1]
-                    mess_select_group.append(message)  # [2] Пост для первой ветки
-                    mess_select_group.append(branch)  # branch 1 ветки [3]
-
-                    mess_select_group.append(0)  # 1 пост 2 ветки [4] branch 2 ветки
-                    mess_select_group.append(0)  # 1 пост 2 ветки [5] message_id 2 ветки
-                    mess_select_group.append(0)  # 1 пост 2 ветки [6]
-                    mess_select_group.append(message)  # 1 пост 2 ветки [6]
-
-
-            #  Новый 1 пост 1 ветки
-            else:
-                print("Новый 1 пост 1 ветки")
-                m = await bot.send_message(chat_id=forum,
-                                           text=message,
-                                           message_thread_id=branch
-                                           )
-
-                mess_select_group.append(m.message_id) # id первой ветки [0]
-                mess_select_group.append(srez) #  [1]
-                mess_select_group.append(message) #  [2]
-                mess_select_group.append(branch) # 1 пост 1 ветки [3]
-
-
-                mess_select_group.append(0) # 1 пост 2 ветки [4] branch 2 ветки
-                mess_select_group.append(0) # 1 пост 2 ветки [5] message_id 2 ветки
-                mess_select_group.append(message) # 1 пост 2 ветки [6]
-
-                # Title для проверки 1 ветки на его одинаковость
-                mess_select_group.append(title) # Title для 1 ветки [7]
-                mess_select_group.append(title) # Title для 1 ветки [8]
-
-    except Exception as e:
-        print(e)
-
-
+# --- ОБРАБОТЧИК СООБЩЕНИЙ ---
 @client.on(events.NewMessage)
 async def my_event_handler(event):
-    client.parse_mode = 'html'
-    global title_groups
-    print("---------------")
-    text = event.message.text
-    if len(text) < 20:  # Если символов меньше 30 то это скорее всего не заявка
+    asyncio.create_task(process_event(event))
+
+async def process_event(event):
+    # 1. Пропускаем исходящие
+    if event.out:
         return
-    # Проверка на blacklist
-    if not any(keyword in text.replace("СЕГОДНЯ", "") for keyword in city_config.blacklist):
-        print("Проверку на стоп слова прошли")
 
-        try:
-            id_channel = f"-100{str(event.peer_id.channel_id)}"
-            info_channel = await client.get_entity(int(id_channel))
-            title = info_channel.title
-            id_group = event.peer_id.channel_id
-            if str(id_group) in str(forum):  # Игнор Transfer GPT
-                return
-            if str(id_group) in str(2451573337):  # Игнор Error logs| Exception
-                return
-            if str(id_group) in str(2432810487):  # Игнор Обсуждения и общение
-                return
-            if str(id_group) in str(1384585087):  # спам
-                return
-            if str(id_group) in str(1695657275):  # спам
-                return
-            if str(id_group) in str(2010520161):  # спам
-                return
-            text = event.message.text
-            mess_id = event.id
-            print(title)
-            if len(text) < 20: # Если символов меньше 30, то это скорее всего не заявка
-                return
-            res = True
+    text = event.message.text
+    if not text or len(text) < 20:
+        return
 
-            # Проверяем наличие города в тексте
-            if any(keyword.lower() in text.lower()
-                   for keyword in itertools.chain.from_iterable(city_config.districts.values())):
-                # Отправляем во "Все заказы"
-                await send_group(text, 177, id_group, mess_id, title, "Все заказы")
+    # 2. Быстрая проверка на стоп-слова
+    for word in city_config.blacklist:
+        if word.lower() in text.lower().replace("сегодня", ""):
+            # print(f"Стоп-слово: {word}") # Раскомментируйте для отладки
+            return
 
-                # Фильтр По ключевым словам
-                str_city = [] # Определяем пункт А
-                for keyword in itertools.chain.from_iterable(city_config.districts.values()):
-                    if keyword.lower() in text.lower():
-                        str_city.append(keyword.lower())
-
-                res_city = [str_city[0], str_city[-1]]
-                print(res_city)
-
-                positions = {city: text.lower().find(city) for city in res_city if text.lower().find(city) != -1}
-                first_city = min(positions, key=positions.get) if positions else None
-                print(first_city)
-
-                #  Центральный
-                if any(keyword.lower() in first_city for keyword in city_config.districts["central"]):
-                    # Отправляем сообщение в нужную ветку
-                    await send_group(text, 26, id_group, mess_id, title, "Центральный")
-                    return
-                #  ЛДНР
-                if any(keyword.lower() in first_city for keyword in city_config.districts["ЛДНР"]):
-                    await send_group(text, 74, id_group, mess_id, title, "ЛДНР")
-                    return
-                #  Запорожье и Херсон
-                if any(keyword.lower() in first_city for keyword in city_config.districts["zap_her"]):
-                    await send_group(text, 75, id_group, mess_id, title, "Запорожье и Херсон")
-                    return
-                #  Северо-Западный
-                if any(keyword.lower() in first_city for keyword in city_config.districts["sev_zapad"]):
-                    await send_group(text, 28, id_group, mess_id, title, "Северо-Западный")
-                    return
-                # Южный округ
-                if any(keyword.lower() in first_city for keyword in city_config.districts["yug"]):
-                    await send_group(text, 79, id_group, mess_id, title, "Южный")
-                    return
-                # Северо Кавказский округ
-                if any(keyword.lower() in first_city for keyword in city_config.districts["sev_kav"]):
-                    await send_group(text, 35, id_group, mess_id, title, "Северо-Кавказский")
-                    return
-                # Приволжский округ
-                if any(keyword.lower() in first_city for keyword in city_config.districts["privolz"]):
-                    await send_group(text, 80, id_group, mess_id, title, "Приволжский")
-                    return
-                # Уральский округ
-                if any(keyword.lower() in first_city for keyword in city_config.districts["ural"]):
-                    await send_group(text, 82, id_group, mess_id, title, "Уральский")
-                    return
-                #  Сибирский
-                if any(keyword.lower() in first_city for keyword in city_config.districts["sibir"]):
-                    await send_group(text, 32, id_group, mess_id, title, "Сибирский")
-                    return
-                #  Дальневосточный
-                if any(keyword.lower() in first_city for keyword in city_config.districts["dalnevostok"]):
-                    await send_group(text, 78, id_group, mess_id, title, "Дальневосточный")
-                    return
-            else:
-                try:
-                    await bot.send_message(chat_id="-1002451573337",  # Error logs| Exception
-                                           text=f"<b>Не прошел фильтр:</b> {text}")
-                except:
-                    await client.send_message(entity=-1002451573337,
-                                              message=f"<b>Не прошел фильтр:</b> {text}")
-        except Exception as e:
-            print(e)
-            try:
-                await bot.send_message(chat_id="-1002451573337",  # Error logs| Exception
-                                       text=f"<b>my_event_handler:</b> {str(e)}")
-            except Exception as error:
-                await client.send_message(entity=-1002451573337,  # Error logs| Exception
-                                          message=f"<b>my_event_handler:</b> {str(e)}\n"
-                                                  f"{error}")
-
-# Настройка логирования: запись в файл logs.txt
-logging.basicConfig(
-    level=logging.INFO,  # Уровень логирования (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    format="%(asctime)s - %(levelname)s - %(message)s",  # Формат сообщения
-    datefmt="%Y-%m-%d %H:%M:%S",  # Формат даты и времени
-    handlers=[
-        logging.FileHandler("logs.txt", encoding="utf-8"),  # Запись в файл
-        logging.StreamHandler()  # Вывод в консоль
-    ]
-)
-
-
-async def telebot():
-    await client.start()
-    me = await client.get_me()
-    print(f"Юзер бот {me.username} запущен!")
-
-    # if me:
-        # logging.INFO(f"Юзер бот запущен: {me.username}")
-        # print("Юзер бот запущен!")
-    users = await client.get_participants(config.forum)
-    all_users = []
-    for user in users:
-        user_id = str(user.id)
-        user_name = user.username
-        all_users.append(user.id)
-        database.write_user(user_id, user_name)
+    # 3. ИГНОР ЛИСТ (Наш форум и спамеры)
     try:
-        await bot.send_message(chat_id=config.admins[0],
-                               text=f"Запуск бота!\n"
-                                    f"Всего: {len(all_users)}")
+        id_group = event.peer_id.channel_id
+        # Нормализуем ID форума (убираем -100)
+        clean_forum_id = int(str(config.forum).replace("-100", ""))
+        
+        ignored_ids = [
+            clean_forum_id, 
+            2451573337, 2432810487, 1384585087, 
+            1695657275, 2010520161
+        ]
+        if id_group in ignored_ids:
+            return
+    except AttributeError:
+        pass 
+
+    # 4. Проверка на города
+    text_lower = text.lower()
+    found_districts = set()
+    
+    for district_name, keywords in city_config.districts.items():
+        for keyword in keywords:
+            if keyword.lower() in text_lower:
+                found_districts.add(district_name)
+                # Как только нашли город в этом округе, идем к следующему округу
+                # (небольшая оптимизация, чтобы не перебирать все слова округа)
+                break 
+
+    if not found_districts:
+        return 
+
+    # --- ЕСЛИ ЗАКАЗ ПОДХОДИТ ---
+    
+    mess_id = event.id
+    
+    # Кеширование названия
+    title = titles_cache.get(id_group, "Unknown")
+    if title == "Unknown":
+        try:
+            chat = await event.get_chat()
+            title = chat.title
+            titles_cache[id_group] = title
+        except:
+            pass
+
+    # Определяем название округа для уведомления
+    district_map = {
+        "central": "Центральный", "ЛДНР": "ЛДНР", "zap_her": "Запорожье и Херсон",
+        "sev_zapad": "Северо-Западный", "yug": "Южный", "sev_kav": "Северо-Кавказский",
+        "privolz": "Приволжский", "ural": "Уральский", "sibir": "Сибирский",
+        "dalnevostok": "Дальневосточный"
+    }
+    
+    found_key = list(found_districts)[0]
+    district_name_ru = district_map.get(found_key, "Все заказы")
+
+    # В очередь
+    await msg_queue.put((text, id_group, mess_id, title, district_name_ru))
+
+
+# --- ГЛАВНАЯ ФУНКЦИЯ ---
+async def telebot():
+    print("⏳ Запуск UserBot...")
+    await client.start()
+    
+    asyncio.create_task(worker())
+    
+    print("🔄 Кеширование каналов...")
+    async for dialog in client.iter_dialogs():
+        if dialog.is_channel or dialog.is_group:
+            titles_cache[dialog.id] = dialog.title
+
+    print("✅ Бот готов!")
+
+    try:
+        users = await client.get_participants(config.forum)
         for user in users:
-            user_id = str(user.id)
-            date = database.date_product_end(user_id)
-            database.del_ids()
-            await asyncio.sleep(1)
-            if not date: # Если False
-                try:
-                    await bot.ban_chat_member(chat_id=forum, user_id=user_id)
-                    await bot.unban_chat_member(chat_id=forum,
-                                                user_id=user_id)  # Чтобы не было перманентного бана
-
-                    await bot.send_message(chat_id=config.admins[0],
-                                           text=f"У @{user.username} кончилась подписка, он исключен из группы")
-                    print(f"У {user.username} кончилась подписка, он исключен из группы")
-
-                except Exception as e:
-                        await bot.send_message(chat_id=config.admins[0],
-                                               text=f"{str(e)}\n"
-                                                    f"{user.id} @{user.username}")
-                        try:
-                            await bot.ban_chat_member(chat_id=forum, user_id=user_id)
-                            await bot.unban_chat_member(chat_id=forum,
-                                                        user_id=user_id)  # Чтобы не было перманентного бана
-
-                            await bot.send_message(chat_id=config.admins[0],
-                                                   text=f"Удален из группы\n"
-                                                        f"{user.id} @{user.username}")
-                        except Exception as e:
-                            await bot.send_message(chat_id=config.admins[0],
-                                                   text=f"Не получается удалить"
-                                                        f"{str(e)}\n"
-                                                        f"{user.id} @{user.username}")
-
-            else:
-                pass
-                # res = database.date_product(user_id)
-                # await bot.send_message(chat_id=config.admins[0],
-                #                        text=f"@{user.username}: {res.replace("Ваш", "")}")
+            database.write_user(str(user.id), user.username or "NoName")
+            
+        await bot.send_message(chat_id=config.admins[0], 
+                               text=f"Бот перезагружен. В группе: {len(users)} чел.")
+        
+        asyncio.create_task(check_kicks(users))
     except Exception as e:
-        await bot.send_message(chat_id=config.admins[0],
-                               text=f"{e}")
+        print(f"Ошибка проверки участников: {e}")
+
+
+async def check_kicks(users):
+    for user in users:
+        await asyncio.sleep(0.5) 
+        user_id = str(user.id)
+        if not database.date_product_end(user_id):
+            try:
+                await bot.ban_chat_member(chat_id=forum, user_id=user.id)
+                await bot.unban_chat_member(chat_id=forum, user_id=user.id)
+                print(f"Кикнут: {user.username}")
+            except Exception:
+                pass

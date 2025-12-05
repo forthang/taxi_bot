@@ -3,6 +3,7 @@
 import asyncpg
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Any, Optional
 
@@ -15,13 +16,25 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 pool: Optional[asyncpg.Pool] = None
 
 async def get_pool() -> asyncpg.Pool:
-    """Возвращает пул соединений, инициализируя его при необходимости."""
+    """Возвращает пул соединений с повторными попытками."""
     global pool
     if pool is None:
         if not DATABASE_URL:
             raise ValueError("Переменная окружения DATABASE_URL не установлена!")
-        pool = await asyncpg.create_pool(dsn=DATABASE_URL)
-        logger.info("DB: Пул соединений PostgreSQL создан.")
+        
+        retries = 10
+        for i in range(retries):
+            try:
+                pool = await asyncpg.create_pool(dsn=DATABASE_URL)
+                logger.info("DB: Пул соединений PostgreSQL создан.")
+                break
+            except (OSError, asyncpg.CannotConnectNowError, asyncpg.PostgresConnectionError) as e:
+                if i == retries - 1:
+                    logger.critical(f"DB: Не удалось подключиться к БД после {retries} попыток: {e}")
+                    raise e
+                logger.warning(f"DB: База данных еще не готова (попытка {i+1}/{retries}). Ждем 2 сек...")
+                await asyncio.sleep(2)
+                
     return pool
 
 async def initialize_db():

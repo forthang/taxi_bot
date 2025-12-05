@@ -4,8 +4,14 @@ taxi/logs.txt
 taxi/*.txt
 taxi/search-new-keys.json
 
-blacktaxi/venv/
-blacktaxi/__pycache__/
-blacktaxi/logs/
-blacktaxi/*.txt
-blacktaxi/search-new-keys.json
+telegram-vip-bot/venv/
+telegram-vip-bot/__pycache__/
+telegram-vip-bot/logs/
+telegram-vip-bot/*.txt
+telegram-vip-bot/search-new-keys.json
+
+.env
+vpn/logs/
+vpn/__pycache__/
+vpn/data/
+vpn/.env

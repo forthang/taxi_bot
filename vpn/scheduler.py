@@ -1,5 +1,4 @@
-
-# /bot/scheduler.py (ОБНОВЛЕННАЯ ВЕРСИЯ С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ)
+# /bot/scheduler.py
 
 import asyncio
 import logging
@@ -38,7 +37,7 @@ async def run_notifications(bot: Bot):
     """
     logger.info("SCHEDULER: Запуск периодической задачи.")
     
-    # Получаем переменные окружения прямо здесь, чтобы не импортировать их
+    # Получаем переменные окружения
     remnawave_panel_url = os.getenv("REMNAWAVE_PANEL_URL")
     remnawave_api_token = os.getenv("REMNAWAVE_API_TOKEN")
 
@@ -51,7 +50,8 @@ async def run_notifications(bot: Bot):
     # --- ШАГ 1: Синхронизация дат ---
     logger.info("SCHEDULER: Начало синхронизации дат подписок с панелью.")
     try:
-        active_users_in_db = get_all_active_users_for_sync()
+        # ДОБАВЛЕН AWAIT
+        active_users_in_db = await get_all_active_users_for_sync()
         logger.info(f"SCHEDULER_SYNC: Найдено {len(active_users_in_db)} активных пользователей в локальной БД для проверки.")
         
         if active_users_in_db:
@@ -62,10 +62,17 @@ async def run_notifications(bot: Bot):
                         user_data = await mgr.find_user_by_username(username)
                         if user_data and user_data.get("expireAt"):
                             expire_str = user_data["expireAt"]
-                            panel_date = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
-                            sync_subscription_date(user_id, panel_date, current_time)
+                            # Обработка даты
+                            try:
+                                panel_date = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
+                            except ValueError:
+                                # Fallback если формат другой
+                                panel_date = datetime.strptime(expire_str.split('.')[0], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+                            # ДОБАВЛЕН AWAIT
+                            await sync_subscription_date(user_id, panel_date, current_time)
                         else:
-                            logger.warning(f"SCHEDULER_SYNC: Пользователь {username} не найден в панели, но активен в БД. Возможно, был удален вручную.")
+                            logger.warning(f"SCHEDULER_SYNC: Пользователь {username} не найден в панели, но активен в БД.")
                     except RemnaAPIError as e:
                         logger.error(f"SCHEDULER_SYNC: Ошибка API при получении данных для {username}: {e}")
                     
@@ -74,36 +81,40 @@ async def run_notifications(bot: Bot):
         logger.error(f"SCHEDULER_SYNC: Критическая ошибка на этапе синхронизации: {e}", exc_info=True)
     logger.info("SCHEDULER_SYNC: Этап синхронизации завершен.")
 
-    # --- ШАГ 2: Отправка уведомлений (на основе уже синхронизированных данных) ---
+    # --- ШАГ 2: Отправка уведомлений ---
     logger.info("SCHEDULER: Начало отправки уведомлений.")
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💎 Продлить подписку", callback_data="go_to_subscription")]])
 
     # Уведомления за 24 часа
     try:
-        users_to_pre_notify = get_subscriptions_to_pre_notify()
+        # ДОБАВЛЕН AWAIT
+        users_to_pre_notify = await get_subscriptions_to_pre_notify()
         logger.info(f"SCHEDULER_NOTIFY: Найдено {len(users_to_pre_notify)} пользователей для предварительного уведомления.")
         for (user_id,) in users_to_pre_notify:
             try:
                 await bot.send_message(chat_id=user_id, text=PRE_EXPIRATION_TEXT, reply_markup=keyboard)
-                mark_pre_notification_as_sent(user_id)
+                # ДОБАВЛЕН AWAIT
+                await mark_pre_notification_as_sent(user_id)
                 logger.info(f"SCHEDULER_NOTIFY: Отправлено предварительное уведомление пользователю {user_id}.")
             except (Forbidden, BadRequest) as e:
-                logger.warning(f"SCHEDULER_NOTIFY: Не удалось отправить предварительное уведомление user_id {user_id}: {e}. Вероятно, бот заблокирован.")
+                logger.warning(f"SCHEDULER_NOTIFY: Не удалось отправить уведомление user_id {user_id}: {e}")
             await asyncio.sleep(0.1)
     except Exception as e:
         logger.error(f"SCHEDULER_NOTIFY: Критическая ошибка при отправке предварительных уведомлений: {e}", exc_info=True)
 
     # Уведомления об истечении
     try:
-        users_to_notify = get_subscriptions_to_notify()
+        # ДОБАВЛЕН AWAIT
+        users_to_notify = await get_subscriptions_to_notify()
         logger.info(f"SCHEDULER_NOTIFY: Найдено {len(users_to_notify)} пользователей для уведомления об истечении подписки.")
         for (user_id,) in users_to_notify:
             try:
                 await bot.send_message(chat_id=user_id, text=EXPIRATION_TEXT, reply_markup=keyboard)
-                mark_subscription_as_expired(user_id)
+                # ДОБАВЛЕН AWAIT
+                await mark_subscription_as_expired(user_id)
                 logger.info(f"SCHEDULER_NOTIFY: Отправлено уведомление об истечении подписки пользователю {user_id}.")
             except (Forbidden, BadRequest) as e:
-                logger.warning(f"SCHEDULER_NOTIFY: Не удалось отправить уведомление об истечении подписки user_id {user_id}: {e}. Вероятно, бот заблокирован.")
+                logger.warning(f"SCHEDULER_NOTIFY: Не удалось отправить уведомление об истечении подписки user_id {user_id}: {e}")
             await asyncio.sleep(0.1)
     except Exception as e:
         logger.error(f"SCHEDULER_NOTIFY: Критическая ошибка при отправке уведомлений об истечении: {e}", exc_info=True)
