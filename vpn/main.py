@@ -147,25 +147,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def safe_parse_datetime(date_obj: Union[str, datetime, None]) -> datetime:
-    """
-    Безопасный парсинг даты. 
-    PostgreSQL возвращает datetime, SQLite возвращал str.
-    """
-    if date_obj is None:
+    """Парсит дату из SQLite (строка) или возвращает текущую."""
+    if not date_obj:
         return datetime.now(timezone.utc)
     
+    # На случай если где-то проскочит объект
     if isinstance(date_obj, datetime):
-        # Если база (asyncpg) уже вернула datetime, просто убедимся, что есть timezone
-        if date_obj.tzinfo is None:
-            return date_obj.replace(tzinfo=timezone.utc)
-        return date_obj
+        return date_obj if date_obj.tzinfo else date_obj.replace(tzinfo=timezone.utc)
 
-    # Если вдруг пришла строка (старые данные или SQLite)
     try:
-        clean_date = str(date_obj).split('.')[0].split('+')[0].split('Z')[0].strip()
-        return datetime.strptime(clean_date, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-    except (ValueError, IndexError, AttributeError) as e:
-        logger.error(f"Не удалось распарсить дату '{date_obj}': {e}")
+        # SQLite хранит как '2023-10-10 12:00:00' или '2023-10-10 12:00:00+00:00'
+        clean = str(date_obj).split('.')[0].split('+')[0].replace('T', ' ').strip()
+        return datetime.strptime(clean, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+    except Exception as e:
+        logger.error(f"Date parse error: {e}")
         return datetime.now(timezone.utc)
 
 def format_bytes(size: float) -> str:

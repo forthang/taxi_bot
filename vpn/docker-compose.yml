@@ -1,37 +1,11 @@
 services:
-  db:
-    image: postgres:15-alpine
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    # --- ДОБАВЛЕНО: Проверка здоровья БД ---
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   bot:
     build: .
     restart: always
-    # --- ИЗМЕНЕНО: Ждать, пока БД станет "healthy" ---
-    depends_on:
-      db:
-        condition: service_healthy
     env_file:
       - .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     ports:
       - "${WEBHOOK_PORT}:${WEBHOOK_PORT}"
     volumes:
       - ./logs:/app/logs
-
-volumes:
-  pg_data:
+      - ./data:/app/data  # ВАЖНО: Здесь будет лежать файл database.db
