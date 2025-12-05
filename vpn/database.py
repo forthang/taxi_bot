@@ -8,18 +8,15 @@ from typing import List, Tuple, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Пути к данным
 DATA_DIR = os.getenv("DATA_DIR", "data")
 DB_PATH = os.path.join(DATA_DIR, 'database.db')
 
 async def initialize_db():
-    """
-    Инициализирует базу данных SQLite.
-    """
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    
     async with aiosqlite.connect(DB_PATH) as db:
-        # Таблица пользователей
+        # Включаем WAL режим для лучшей конкурентности
+        await db.execute("PRAGMA journal_mode=WAL;")
+        
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
@@ -34,7 +31,6 @@ async def initialize_db():
                 agreed_to_terms INTEGER DEFAULT 0
             )''')
 
-        # Таблица подписок
         await db.execute('''
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id INTEGER PRIMARY KEY,
@@ -48,7 +44,6 @@ async def initialize_db():
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
             )''')
 
-        # Таблица статистики
         await db.execute('''
             CREATE TABLE IF NOT EXISTS referral_sources (
                 id INTEGER PRIMARY KEY,
@@ -57,7 +52,6 @@ async def initialize_db():
                 purchase_count INTEGER DEFAULT 0
             )''')
         
-        # Таблица платежей
         await db.execute('''
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY,
@@ -70,45 +64,27 @@ async def initialize_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
         
-        # Индексы (для скорости)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_subs_user_id ON subscriptions(user_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_subs_status ON subscriptions(status)")
-        
-        # Миграция (если база старая)
-        try:
-            await db.execute("SELECT agreed_to_terms FROM users LIMIT 1")
-        except Exception:
-            try:
-                await db.execute("ALTER TABLE users ADD COLUMN agreed_to_terms INTEGER DEFAULT 0")
-            except:
-                pass
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pay_pid ON payments(payment_id)")
         
         await db.commit()
-        logger.info("DB: Инициализация SQLite завершена.")
+        logger.info("DB: Инициализация завершена (WAL enabled).")
 
 async def add_user(user_id: int, username: str, first_name: str, last_name: str, source: str = None, referrer_id: int = None):
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT source, referrer_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            existing_user = await cursor.fetchone()
-
-        if not existing_user:
-            await db.execute(
-                "INSERT INTO users (user_id, username, first_name, last_name, source, referrer_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, username, first_name, last_name, source, referrer_id)
-            )
-            logger.info(f"DB: Новый пользователь {user_id}.")
-            
-            if source:
-                await db.execute("INSERT OR IGNORE INTO referral_sources (source_name) VALUES (?)", (source,))
-                await db.execute("UPDATE referral_sources SET start_count = start_count + 1 WHERE source_name = ?", (source,))
-        
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, source, referrer_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, username, first_name, last_name, source, referrer_id)
+        )
+        if source:
+            await db.execute("INSERT OR IGNORE INTO referral_sources (source_name) VALUES (?)", (source,))
+            await db.execute("UPDATE referral_sources SET start_count = start_count + 1 WHERE source_name = ?", (source,))
         await db.commit()
 
 # --- Подписки ---
 
 async def get_active_subscription(user_id: int) -> Optional[Tuple[str, str]]:
-    """Возвращает uuid и дату (строкой) активной подписки."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT vless_uuid, end_date FROM subscriptions WHERE user_id = ? AND status = 'active' AND end_date > CURRENT_TIMESTAMP", 
@@ -125,49 +101,40 @@ async def get_any_subscription(user_id: int) -> Optional[Tuple[str, str]]:
             return await cursor.fetchone()
 
 async def update_or_create_subscription(user_id: int, vless_uuid: str, duration_days: int):
-    logger.debug(f"DB: Обновление подписки user_id={user_id}.")
     async with aiosqlite.connect(DB_PATH) as db:
-        # Ищем дату окончания текущей подписки
         async with db.execute("SELECT end_date FROM subscriptions WHERE user_id = ? AND status = 'active' ORDER BY end_date DESC LIMIT 1", (user_id,)) as cursor:
             existing_sub = await cursor.fetchone()
 
         start_from = datetime.now(timezone.utc)
-        
         if existing_sub and existing_sub[0]:
             try:
-                date_string = existing_sub[0].split('.')[0].replace('Z', '').replace('T', ' ')
+                date_string = str(existing_sub[0]).split('.')[0].replace('Z', '').replace('T', ' ')
                 current_end_date = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
                 if current_end_date > start_from:
                     start_from = current_end_date
             except Exception as e:
-                logger.warning(f"DB: Ошибка парсинга даты: {e}")
+                logger.warning(f"DB date parse error: {e}")
 
         new_end_date = start_from + timedelta(days=duration_days)
         
-        # В SQLite используем INSERT OR REPLACE или ON CONFLICT
         await db.execute("""
             INSERT INTO subscriptions (user_id, vless_uuid, status, start_date, end_date, notification_sent, pre_expiration_notification_sent) 
             VALUES (?, ?, 'active', ?, ?, 0, 0)
             ON CONFLICT(vless_uuid) DO UPDATE SET
             end_date = excluded.end_date, status = 'active', notification_sent = 0, pre_expiration_notification_sent = 0;
         """, (user_id, vless_uuid, start_from, new_end_date))
-        
         await db.commit()
-        logger.info(f"DB: Подписка user_id={user_id} обновлена до {new_end_date}.")
 
 # --- Платежи ---
 
-async def add_payment(payment_id: str, user_id: int, amount: float, tariff: str) -> int:
+async def add_payment(payment_id: str, user_id: int, amount: float, tariff: str):
+    """Добавляет платеж, если его нет. Иначе ничего не делает."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR IGNORE INTO payments (payment_id, user_id, amount, tariff, status) VALUES (?, ?, ?, ?, 'pending')",
             (payment_id, user_id, amount, tariff)
         )
         await db.commit()
-        
-        async with db.execute("SELECT id FROM payments WHERE payment_id = ?", (payment_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
 
 async def update_payment_status(payment_id: str, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -176,6 +143,16 @@ async def update_payment_status(payment_id: str, status: str):
             (status, payment_id)
         )
         await db.commit()
+
+async def get_payment_info(payment_id: str) -> Optional[dict]:
+    """Получает информацию о платеже для проверки статуса."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM payments WHERE payment_id = ?", (payment_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
 
 async def get_pending_payments() -> List[Tuple[Any, ...]]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -187,8 +164,8 @@ async def get_pending_payments() -> List[Tuple[Any, ...]]:
 async def has_used_trial(user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT had_trial FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            result = await cursor.fetchone()
-            return result is not None and result[0] == 1
+            res = await cursor.fetchone()
+            return res and res[0] == 1
 
 async def mark_trial_as_used(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -198,8 +175,8 @@ async def mark_trial_as_used(user_id: int):
 async def has_agreed_to_terms(user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT agreed_to_terms FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            result = await cursor.fetchone()
-            return result is not None and result[0] == 1
+            res = await cursor.fetchone()
+            return res and res[0] == 1
 
 async def mark_terms_as_agreed(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -209,54 +186,43 @@ async def mark_terms_as_agreed(user_id: int):
 async def get_user_source(user_id: int) -> Optional[str]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT source FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            result = await cursor.fetchone()
-            return result[0] if result else None
+            res = await cursor.fetchone()
+            return res[0] if res else None
 
 async def get_user_referrer(user_id: int) -> Optional[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            result = await cursor.fetchone()
-            return result[0] if result else None
+            res = await cursor.fetchone()
+            return res[0] if res else None
 
-# --- Реферальная система ---
+# --- Рефералка ---
 
 async def log_referral_purchase(user_id: int) -> Optional[int]:
     async with aiosqlite.connect(DB_PATH) as db:
-        # Обновляем источник
         async with db.execute("SELECT source FROM users WHERE user_id = ?", (user_id,)) as cursor:
             res = await cursor.fetchone()
             if res and res[0]:
                 await db.execute("UPDATE referral_sources SET purchase_count = purchase_count + 1 WHERE source_name = ?", (res[0],))
-
-        # Проверяем реферала
+        
         async with db.execute("SELECT COUNT(*) FROM subscriptions WHERE user_id = ?", (user_id,)) as cursor:
-            sub_count_res = await cursor.fetchone()
-            sub_count = sub_count_res[0] if sub_count_res else 0
+            cnt = (await cursor.fetchone())[0]
         
-        # Если покупка первая (или единственная текущая)
-        if sub_count <= 1:
+        # Если первая покупка
+        if cnt <= 1:
             async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
-                ref_res = await cursor.fetchone()
-                if ref_res and ref_res[0]:
+                ref = await cursor.fetchone()
+                if ref and ref[0]:
                     await db.commit()
-                    return ref_res[0]
-        
+                    return ref[0]
         await db.commit()
         return None
 
 async def get_referral_program_stats(referrer_id: int) -> Tuple[int, int]:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(id) FROM users WHERE referrer_id = ?", (referrer_id,)) as cursor:
-            invited = (await cursor.fetchone())[0]
-        
-        async with db.execute("""
-            SELECT COUNT(DISTINCT u.user_id) 
-            FROM users u 
-            JOIN subscriptions s ON u.user_id = s.user_id 
-            WHERE u.referrer_id = ?
-        """, (referrer_id,)) as cursor:
-            purchased = (await cursor.fetchone())[0]
-            
+        async with db.execute("SELECT COUNT(id) FROM users WHERE referrer_id = ?", (referrer_id,)) as cur:
+            invited = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(DISTINCT u.user_id) FROM users u JOIN subscriptions s ON u.user_id = s.user_id WHERE u.referrer_id = ?", (referrer_id,)) as cur:
+            purchased = (await cur.fetchone())[0]
         return invited, purchased
 
 # --- Статистика ---
@@ -269,27 +235,19 @@ async def get_all_user_ids() -> List[int]:
 
 async def get_stats() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(id) FROM users") as cur1:
-            total_users = (await cur1.fetchone())[0]
-        
-        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM subscriptions WHERE status = 'active' AND end_date > CURRENT_TIMESTAMP") as cur2:
-            active_subs = (await cur2.fetchone())[0]
-            
-        return {"total_users": total_users, "active_subscriptions": active_subs}
+        async with db.execute("SELECT COUNT(id) FROM users") as cur:
+            total = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM subscriptions WHERE status = 'active' AND end_date > CURRENT_TIMESTAMP") as cur:
+            active = (await cur.fetchone())[0]
+        return {"total_users": total, "active_subscriptions": active}
 
 # --- Scheduler Helpers ---
 
 async def get_subscriptions_to_pre_notify():
     async with aiosqlite.connect(DB_PATH) as db:
         tomorrow = datetime.now() + timedelta(hours=24)
-        async with db.execute("""
-            SELECT user_id FROM subscriptions
-            WHERE status = 'active'
-            AND end_date < ?
-            AND end_date > CURRENT_TIMESTAMP
-            AND pre_expiration_notification_sent = 0
-        """, (tomorrow,)) as cursor:
-            return await cursor.fetchall()
+        async with db.execute("SELECT user_id FROM subscriptions WHERE status = 'active' AND end_date < ? AND end_date > CURRENT_TIMESTAMP AND pre_expiration_notification_sent = 0", (tomorrow,)) as cur:
+            return await cur.fetchall()
 
 async def mark_pre_notification_as_sent(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -298,26 +256,18 @@ async def mark_pre_notification_as_sent(user_id: int):
 
 async def get_subscriptions_to_notify():
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("""
-            SELECT user_id FROM subscriptions 
-            WHERE status = 'active' 
-            AND end_date < CURRENT_TIMESTAMP 
-            AND notification_sent = 0
-        """) as cursor:
-            return await cursor.fetchall()
+        async with db.execute("SELECT user_id FROM subscriptions WHERE status = 'active' AND end_date < CURRENT_TIMESTAMP AND notification_sent = 0") as cur:
+            return await cur.fetchall()
 
 async def mark_subscription_as_expired(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            UPDATE subscriptions SET status = 'expired', notification_sent = 1 
-            WHERE user_id = ? AND status = 'active' AND end_date < CURRENT_TIMESTAMP
-        """, (user_id,))
+        await db.execute("UPDATE subscriptions SET status = 'expired', notification_sent = 1 WHERE user_id = ? AND status = 'active' AND end_date < CURRENT_TIMESTAMP", (user_id,))
         await db.commit()
 
 async def get_all_active_users_for_sync():
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT DISTINCT user_id FROM subscriptions WHERE status = 'active'") as cursor:
-            return await cursor.fetchall()
+        async with db.execute("SELECT DISTINCT user_id FROM subscriptions WHERE status = 'active'") as cur:
+            return await cur.fetchall()
 
 async def sync_subscription_date(user_id: int, new_end_date: datetime, current_time: datetime):
     async with aiosqlite.connect(DB_PATH) as db:

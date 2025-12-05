@@ -13,8 +13,6 @@ import traceback
 import html
 import json
 
-
-
 from telegram import (
     Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 )
@@ -35,7 +33,8 @@ from database import (
     update_or_create_subscription, has_used_trial, mark_trial_as_used,
     log_referral_purchase, get_referral_program_stats, get_user_source,
     get_user_referrer, has_agreed_to_terms, mark_terms_as_agreed,
-    add_payment, update_payment_status, get_pending_payments, get_stats, get_all_user_ids
+    add_payment, update_payment_status, get_pending_payments, get_stats, get_all_user_ids,
+    get_payment_info  # НОВАЯ ФУНКЦИЯ
 )
 from api import RemnaAsyncManager, RemnaAPIError
 from scheduler import run_notifications
@@ -100,8 +99,8 @@ else:
 
 # --- Тарифы ---
 TARIFFS = {
-    "buy_30": {"price": 129.00, "days": 30, "description": "🗓️ Подписка на 1 месяц"},
-    "buy_90": {"price": 359.00, "days": 90, "description": "🌱 Подписка на 3 месяца"}
+    "buy_30": {"price": 1.00, "days": 30, "description": "🗓️ Подписка на 1 месяц"},
+    "buy_90": {"price": 799.00, "days": 90, "description": "🌱 Подписка на 3 месяца"}
 }
 
 # --- Клавиатуры ---
@@ -121,12 +120,10 @@ BROADCAST_MESSAGE, BROADCAST_CONFIRM = range(2)
 
 
 # --- ХЕЛПЕРЫ ---
-# Добавьте эту функцию
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-    # Формируем текст ошибки
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = "".join(tb_list)
 
@@ -134,61 +131,40 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     message = (
         f"🔥 <b>Произошла ошибка в боте!</b>\n\n"
         f"<pre>Update: {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}</pre>\n\n"
-        f"<pre>{html.escape(tb_string[-3000:])}</pre>" # Ограничиваем длину
+        f"<pre>{html.escape(tb_string[-3000:])}</pre>" 
     )
 
-    # Отправляем всем админам
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=message, parse_mode=ParseMode.HTML)
         except:
             pass
 
-
-
 def safe_parse_datetime(date_obj: Union[str, datetime, None]) -> datetime:
-    """
-    Универсальный парсер даты.
-    Работает и с объектами datetime (Postgres), и со строками (SQLite).
-    """
     if not date_obj:
         return datetime.now(timezone.utc)
     
-    # Если это уже объект datetime (редко в SQLite, но бывает)
     if isinstance(date_obj, datetime):
         return date_obj if date_obj.tzinfo else date_obj.replace(tzinfo=timezone.utc)
 
-    # Если это строка (стандарт для SQLite)
     try:
-        # SQLite обычно возвращает: "2023-12-05 21:00:00.123456" или "2023-12-05 21:00:00"
-        # 1. Убираем +00:00 (если есть)
-        # 2. Убираем букву T (если есть)
-        # 3. Обрезаем миллисекунды (все, что после точки), чтобы формат был единым
         clean_str = str(date_obj).split('+')[0].replace('T', ' ').split('.')[0].strip()
-        
-        # Парсим по формату "Год-Месяц-День Час:Минута:Секунда"
         dt = datetime.strptime(clean_str, '%Y-%m-%d %H:%M:%S')
-        
-        # Добавляем временную зону UTC
         return dt.replace(tzinfo=timezone.utc)
-        
     except (ValueError, IndexError, AttributeError) as e:
         logger.error(f"Date parse error for value '{date_obj}': {e}")
-        # В случае ошибки возвращаем текущее время, чтобы не крашить бота
         return datetime.now(timezone.utc)
 
 def format_bytes(size: float) -> str:
-    """Форматирует байты в читаемый вид (GB, MB)."""
     if not size: 
         return "0 GB"
-    power = 2**30 # 1024**3
+    power = 2**30
     n = size / power
-    if n < 0.01: # Если меньше 10 МБ, покажем в МБ
+    if n < 0.01:
         return f"{size / (2**20):.0f} MB"
     return f"{n:.2f} GB"
 
 async def notify_admins(application: Application, message: str):
-    """Отправляет сообщение всем администраторам."""
     logger.info(f"Отправка уведомления администраторам: {message[:100]}...")
     for admin_id in ADMIN_IDS:
         try:
@@ -202,20 +178,29 @@ async def process_payment(application: Application, payment_id: str, user_id: in
     """
     Асинхронно обрабатывает успешный платеж.
     """
-    logger.info(f"Начало обработки платежа {payment_id} для user_id={user_id}.")
+    logger.info(f"PROCESS_PAYMENT: Старт для {payment_id}, user={user_id}, tariff={tariff}")
+    
     try:
-        await update_payment_status(payment_id, 'processing') # AWAIT
+        # 1. Проверяем, не обработан ли уже платеж (защита от дублей)
+        payment_info = await get_payment_info(payment_id)
+        if payment_info:
+            current_status = payment_info.get("status")
+            if current_status == 'completed':
+                logger.info(f"PROCESS_PAYMENT: Платеж {payment_id} уже обработан (status=completed). Пропускаем.")
+                return
+
+        await update_payment_status(payment_id, 'processing')
         
         days_to_add = TARIFFS[tariff]['days']
-        await grant_subscription(application, user_id, days_to_add) # AWAIT
+        await grant_subscription(application, user_id, days_to_add)
         
-        await update_payment_status(payment_id, 'completed') # AWAIT
-        logger.info(f"Платеж {payment_id} успешно обработан и завершен.")
+        await update_payment_status(payment_id, 'completed')
+        logger.info(f"PROCESS_PAYMENT: Успешно завершен для {payment_id}.")
         
     except Exception as e:
-        logger.critical(f"Критическая ошибка при обработке платежа {payment_id} для user_id={user_id}: {e}", exc_info=True)
-        await update_payment_status(payment_id, 'failed') # AWAIT
-        await notify_admins(application, f"❗️ Критическая ошибка при обработке платежа `{payment_id}` для `user_id={user_id}`.\n\nОшибка: `{e}`\n\nТребуется ручное вмешательство!")
+        logger.critical(f"PROCESS_PAYMENT: Критическая ошибка для {payment_id}: {e}", exc_info=True)
+        await update_payment_status(payment_id, 'failed')
+        await notify_admins(application, f"❗️ Ошибка обработки платежа `{payment_id}` (user: `{user_id}`).\nТекст: `{e}`")
 
 async def grant_subscription(application: Application, user_id: int, days: int, is_trial: bool = False, is_manual: bool = False):
     """
@@ -228,6 +213,9 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
         logger.error(msg)
         if is_manual:
             await notify_admins(application, f"Ошибка: {msg}")
+        # Если это автоматический платеж, мы должны выбросить ошибку, чтобы process_payment поймал её
+        if not is_manual:
+            raise Exception(msg)
         return
 
     try:
@@ -237,11 +225,8 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
         
         start_from = datetime.now(timezone.utc)
         
-        # Если подписка найдена, пробуем распарсить дату окончания
         if old_sub_data and old_sub_data[1]:
             current_end_date = safe_parse_datetime(old_sub_data[1])
-            
-            # Если текущая подписка еще не истекла, продлеваем с её конца
             if current_end_date > start_from:
                 start_from = current_end_date
         
@@ -256,47 +241,46 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
         
         # Шаг 2: Обновление в БД
         vless_uuid_for_db = old_sub_data[0] if old_sub_data else str(uuid.uuid4())
-        await update_or_create_subscription(user_id=user_id, vless_uuid=vless_uuid_for_db, duration_days=days) # AWAIT
+        await update_or_create_subscription(user_id=user_id, vless_uuid=vless_uuid_for_db, duration_days=days)
         
         if is_trial:
-            await mark_trial_as_used(user_id) # AWAIT
+            await mark_trial_as_used(user_id)
 
-        # Шаг 3: Реферальный бонус (только для реальных покупок)
+        # Шаг 3: Реферальный бонус
         if not is_trial and not is_manual:
-            referrer_id = await log_referral_purchase(user_id) # AWAIT
+            referrer_id = await log_referral_purchase(user_id)
             if referrer_id:
                 logger.info(f"Начисляем реферальный бонус 30 дней для user_id={referrer_id}")
-                # Рекурсивный вызов для начисления бонуса
                 await grant_subscription(application, referrer_id, 30, is_manual=True)
                 try:
                     await application.bot.send_message(
                         chat_id=referrer_id, 
-                        text="🎉 Поздравляем! Ваш друг совершил покупку, и мы начислили вам *30 бонусных дней* к подписке!", 
+                        text="🎉 Ваш друг совершил покупку! Вам начислено *30 бонусных дней*!", 
                         parse_mode=ParseMode.MARKDOWN
                     )
-                except (BadRequest, Forbidden) as e:
-                    logger.warning(f"Не удалось уведомить реферера {referrer_id} о бонусе: {e}")
+                except (BadRequest, Forbidden):
+                    pass
 
         # Шаг 4: Уведомление пользователя
         if is_manual:
             message_text = f"✅ Администратор вручную начислил вам *{days} дней* подписки."
         else:
             message_type = "Тестовый доступ" if is_trial else "Подписка"
-            message_text = f"✅ *{message_type} на {days} дней активирован!*\n\nТеперь в разделе «🔐 Мой VPN» вы найдете вашу единую ссылку для подключения."
+            message_text = f"✅ *{message_type} на {days} дней активирован!*\n\nВаша подписка продлена. Приятного пользования!"
         
         await application.bot.send_message(chat_id=user_id, text=message_text, parse_mode=ParseMode.MARKDOWN)
-        logger.info(f"Процесс выдачи подписки для user_id={user_id} завершен успешно.")
+        logger.info(f"Подписка выдана успешно для {user_id}.")
 
     except Exception as e:
         logger.error(f"Ошибка при grant_subscription для {user_id}: {e}", exc_info=True)
-        if is_manual:
-             raise e
+        # Пробрасываем ошибку наверх, чтобы process_payment узнал о сбое
+        raise e
 
-# --- ОБРАБОТЧИКИ (HANDLERS) ---
+# --- ОБРАБОТЧИКИ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    logger.info(f"Команда /start от user: {user.id} ({user.username or 'N/A'}), args: {context.args}")
+    logger.info(f"Команда /start от {user.id}")
     
     payload = context.args[0] if context.args else None
     source, referrer_id = None, None
@@ -307,577 +291,351 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ref_id = int(payload.split('_')[1])
                 if ref_id != user.id: 
                     referrer_id = ref_id
-                    logger.info(f"Пользователь {user.id} пришел по реферальной ссылке от {referrer_id}")
-            except (ValueError, IndexError): 
-                logger.warning(f"Некорректный реферальный код: {payload}")
+            except: pass
         else: 
             source = payload
-            logger.info(f"Пользователь {user.id} пришел с источником: {source}")
             
-    # Добавляем в БД с await
-    await add_user(user.id, user.username, user.first_name, user.last_name, source=source, referrer_id=referrer_id) # AWAIT
+    await add_user(user.id, user.username, user.first_name, user.last_name, source=source, referrer_id=referrer_id)
     
-    text = (f"👋 Привет, {user.first_name or 'пользователь'}!\n\n"
-            f"Это бот **Интернет всегда** — ваш надежный и быстрый доступ к любым сервисам.\n\n"
-            f"Выберите действие в меню.")
+    text = (f"👋 Привет, {user.first_name or 'друг'}!\n"
+            f"Бот **Интернет всегда** готов к работе.")
     await update.message.reply_text(text, reply_markup=main_keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def my_vpn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает статус подписки, трафик, ссылку и QR-код."""
     query = update.callback_query
     user_id = query.from_user.id if query else update.effective_user.id
     chat_id = query.message.chat_id if query else update.effective_chat.id
     message_to_edit = query.message if query else None
 
-    if query:
-        await query.answer()
+    if query: await query.answer()
 
-    subscription = await get_active_subscription(user_id) # AWAIT
+    subscription = await get_active_subscription(user_id)
     
     if not subscription:
-        text = "❌ **Подписка неактивна**\n\nЧтобы получить доступ к VPN, оформите подписку или воспользуйтесь бесплатным тестовым периодом."
+        text = "❌ **Подписка неактивна**\n\nОформите подписку или возьмите тест."
         buttons = []
-        if not await has_used_trial(user_id): # AWAIT
-            buttons.append([InlineKeyboardButton("🚀 Попробовать 3 дня бесплатно", callback_data="get_trial")])
-        buttons.append([InlineKeyboardButton("💎 Выбрать тариф", callback_data="go_to_subscription")])
-        markup = InlineKeyboardMarkup(buttons)
+        if not await has_used_trial(user_id):
+            buttons.append([InlineKeyboardButton("🚀 Тест 3 дня", callback_data="get_trial")])
+        buttons.append([InlineKeyboardButton("💎 Купить подписку", callback_data="go_to_subscription")])
         
         if message_to_edit:
-            await message_to_edit.edit_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            await message_to_edit.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
         else:
-            await context.bot.send_message(chat_id, text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
         return
 
-    # Если подписка активна
     _, end_date_raw = subscription
-    end_date_obj = safe_parse_datetime(end_date_raw)
-    end_date_formatted = end_date_obj.strftime('%d.%m.%Y')
+    end_date_formatted = safe_parse_datetime(end_date_raw).strftime('%d.%m.%Y')
 
     try:
         username_in_panel = f"tg_{user_id}"
         traffic_info = ""
-        
         async with RemnaAsyncManager(REMNAWAVE_PANEL_URL, REMNAWAVE_API_TOKEN) as mgr:
             user_data = await mgr.find_user_by_username(username_in_panel)
             if not user_data or not user_data.get("subscriptionUrl"):
-                raise RemnaAPIError(f"Пользователь {username_in_panel} найден, но ссылка отсутствует.")
+                # Пытаемся создать, если потерялся
+                raise RemnaAPIError("Пользователь есть в БД, но не в панели")
             
             sub_url = user_data.get("subscriptionUrl")
-            
-            # --- УЛУЧШЕНИЕ: Получение статистики трафика ---
             used = user_data.get('trafficUsed', 0)
-            # В Remnawave поле лимита может называться по-разному, обычно trafficLimit или dataLimit
             limit = user_data.get('trafficLimit') or user_data.get('dataLimit') or 0
-            
-            usage_str = format_bytes(used)
-            limit_str = format_bytes(limit) if limit else "∞"
-            traffic_info = f"📊 Трафик: {usage_str} / {limit_str}"
-            # -----------------------------------------------
+            traffic_info = f"📊 Трафик: {format_bytes(used)} / {(format_bytes(limit) if limit else '∞')}"
 
-        text = (f"✅ **Подписка активна до {end_date_formatted}**\n"
-                f"{traffic_info}\n\n"
-                f"Это ваша единая ссылка для всех локаций. Добавьте ее в приложение, и все серверы появятся автоматически.\n\n"
-                f"👇 Нажмите на ссылку, чтобы скопировать:\n"
-                f"`{sub_url}`")
+        text = (f"✅ **Подписка до {end_date_formatted}**\n{traffic_info}\n\n"
+                f"Ваша ссылка:\n`{sub_url}`")
         
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("📲 QR-код", callback_data="show_qr_remna")],
-            [InlineKeyboardButton("📖 Инструкция по установке", callback_data="show_instructions")]
+            [InlineKeyboardButton("📖 Инструкция", callback_data="show_instructions")]
         ])
-
-    except RemnaAPIError as e:
-        logger.error(f"Не удалось получить данные из Remnawave для user_id {user_id}: {e}")
-        text = "❗️ Не удалось получить вашу VPN-подписку. Пожалуйста, попробуйте через несколько минут. Если ошибка повторится, обратитесь в поддержку."
+    except Exception as e:
+        logger.error(f"Ошибка получения данных VPN: {e}")
+        text = "❗️ Ошибка связи с сервером VPN. Попробуйте позже."
         markup = None
 
-    try:
-        if message_to_edit:
-            await message_to_edit.edit_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-        else:
-            await context.bot.send_message(chat_id, text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
-    except BadRequest as e:
-        if "Message is not modified" not in str(e):
-            logger.warning(f"Ошибка при обновлении меню 'Мой VPN': {e}")
+    if message_to_edit:
+        await message_to_edit.edit_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await context.bot.send_message(chat_id, text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 async def subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню выбора тарифов."""
     query = update.callback_query
-    if query:
-        await query.answer()
-        user_id = query.from_user.id
-        chat_id = query.message.chat_id
-    else:
-        user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
-
-    subscription = await get_active_subscription(user_id) # AWAIT
-    text = "💎 **Выберите тариф**\n\nОплатите подписку, чтобы получить неограниченный доступ к быстрому и безопасному VPN."
-
-    if subscription:
-        _, end_date_raw = subscription
-        end_date_obj = safe_parse_datetime(end_date_raw)
-        text = f"✅ Ваша подписка активна до **{end_date_obj.strftime('%d.%m.%Y')}**.\n\nВы можете продлить ее, выбрав один из тарифов ниже. Новые дни добавятся к текущему сроку."
+    if query: await query.answer()
+    
+    chat_id = query.message.chat_id if query else update.effective_chat.id
+    user_id = query.from_user.id if query else update.effective_user.id
 
     buttons = []
-    if not await has_used_trial(user_id): # AWAIT
-        buttons.append([InlineKeyboardButton("🚀 Попробовать 3 дня бесплатно", callback_data="get_trial")])
+    if not await has_used_trial(user_id):
+        buttons.append([InlineKeyboardButton("🚀 Тест 3 дня", callback_data="get_trial")])
 
     for key, tariff in TARIFFS.items():
         buttons.append([InlineKeyboardButton(f"{tariff['description']} — {tariff['price']:.0f}₽", callback_data=key)])
 
-    await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
+    await context.bot.send_message(chat_id, "💎 **Выберите тариф:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.MARKDOWN)
 
 async def referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Реферальная программа."""
     user_id = update.effective_user.id
-    
     bot_username = (await context.bot.get_me()).username
-    referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    invited, purchased = await get_referral_program_stats(user_id)
     
-    invited_count, purchased_count = await get_referral_program_stats(user_id) # AWAIT
-    bonus_days = purchased_count * 30
-    
-    text = (
-        f"🎁 **Пригласите друга и получите 30 дней VPN бесплатно!**\n\n"
-        f"Отправьте другу свою персональную ссылку. Как только он оплатит любую подписку, мы автоматически добавим 30 дней к вашей.\n\n"
-        f"🔗 **Ваша ссылка:**\n`{referral_link}`\n\n"
-        f"📈 **Статистика:**\n"
-        f"- Приглашено: *{invited_count}*\n"
-        f"- Совершили покупку: *{purchased_count}*\n"
-        f"- Получено бонусов: *{bonus_days} дней*"
-    )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Поделиться с другом", url=f"https://t.me/share/url?url={referral_link}&text=Привет! Попробуй этот быстрый и удобный VPN-сервис.")]])
-    await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    text = (f"🎁 **Реферальная программа**\n\nПриглашено: {invited}\nКупили: {purchased}\n"
+            f"Ссылка:\n`{link}`")
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню помощи."""
-    text = "💬 **Центр помощи**\n\nЗдесь вы можете найти инструкции по установке или связаться с нашей поддержкой."
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 Инструкции по установке", callback_data="show_instructions")],
-        [InlineKeyboardButton("👨‍💻 Написать в поддержку", url=f"https://t.me/{SUPPORT_USERNAME}")]
-    ])
-    await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("👨‍💻 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")]])
+    await update.message.reply_text("💬 Если возникли вопросы:", reply_markup=markup)
 
-# --- АДМИН-ПАНЕЛЬ ---
-
+# --- АДМИН ---
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS: return
-    await update.message.reply_text("Панель администратора:", reply_markup=admin_keyboard)
+    if update.effective_user.id in ADMIN_IDS:
+        await update.message.reply_text("Админка:", reply_markup=admin_keyboard)
 
 async def grant_days_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_IDS: return
-    
+    if update.effective_user.id not in ADMIN_IDS: return
     try:
-        # Формат: /grant user_id days
-        _, user_id_str, days_str = update.message.text.split()
-        target_user_id = int(user_id_str)
-        days_to_add = int(days_str)
-        
-        logger.info(f"Администратор {user.id} инициировал ручное начисление {days_to_add} дней для user_id={target_user_id}.")
-        await update.message.reply_text(f"Начинаю начисление {days_to_add} дней для пользователя {target_user_id}...")
-        
-        # Функция внутри уже имеет нужные await
-        await grant_subscription(context.application, target_user_id, days_to_add, is_manual=True)
-        
-        await update.message.reply_text(f"✅ Успешно начислено {days_to_add} дней пользователю {target_user_id}.")
-
-    except ValueError:
-        await update.message.reply_text("Неверный формат. Используйте: `/grant <user_id> <days>`")
+        _, uid, days = update.message.text.split()
+        await grant_subscription(context.application, int(uid), int(days), is_manual=True)
+        await update.message.reply_text("✅ Выдано.")
     except Exception as e:
-        logger.error(f"Ошибка при ручном начислении дней: {e}", exc_info=True)
-        await update.message.reply_text(f"❗️ Произошла ошибка: {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
 
-# --- РАССЫЛКА (ConversationHandler) ---
-
+# --- Рассылка ---
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало диалога о рассылке."""
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Пришлите сообщение, которое нужно разослать всем пользователям. Вы можете использовать Markdown-разметку.")
+    await update.callback_query.edit_message_text("Пришлите текст рассылки:")
     return BROADCAST_MESSAGE
 
 async def broadcast_get_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получение сообщения для рассылки."""
-    context.user_data['broadcast_message'] = update.message
-    # Получаем общее количество пользователей для статистики
-    all_users = await get_all_user_ids() # AWAIT
-    user_count = len(all_users)
-    
-    keyboard = [[
-        InlineKeyboardButton("✅ Начать рассылку", callback_data="broadcast_confirm_yes"),
-        InlineKeyboardButton("❌ Отмена", callback_data="broadcast_confirm_no")
-    ]]
-    
-    await update.message.reply_text(
-        f"Вы собираетесь отправить это сообщение. Всего пользователей: {user_count}.\n\nНачать рассылку?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    context.user_data['msg'] = update.message
+    await update.message.reply_text("Разослать?", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Да", callback_data="broadcast_yes"), InlineKeyboardButton("Нет", callback_data="broadcast_no")]
+    ]))
     return BROADCAST_CONFIRM
 
 async def broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение и запуск рассылки."""
     query = update.callback_query
     await query.answer()
-
-    if query.data == "broadcast_confirm_no":
-        await query.edit_message_text("Рассылка отменена.")
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    await query.edit_message_text("⏳ Начинаю рассылку... Это может занять время.")
-    
-    message_to_send = context.user_data['broadcast_message']
-    user_ids = await get_all_user_ids() # AWAIT
-    
-    success_count = 0
-    fail_count = 0
-    
-    for user_id in user_ids:
-        try:
-            await message_to_send.copy(chat_id=user_id)
-            success_count += 1
-        except (Forbidden, BadRequest):
-            fail_count += 1
-        await asyncio.sleep(0.05) # Небольшая задержка, чтобы не словить флуд-контроль
-
-    summary_text = f"✅ Рассылка завершена!\n\n- Успешно отправлено: {success_count}\n- Не удалось доставить (блок/удален): {fail_count}"
-    await context.bot.send_message(chat_id=query.from_user.id, text=summary_text)
-    
+    if query.data == "broadcast_yes":
+        await query.edit_message_text("Рассылка запущена...")
+        ids = await get_all_user_ids()
+        msg = context.user_data['msg']
+        for uid in ids:
+            try:
+                await msg.copy(chat_id=uid)
+                await asyncio.sleep(0.05)
+            except: pass
+        await context.bot.send_message(query.from_user.id, "Рассылка завершена.")
+    else:
+        await query.edit_message_text("Отменено.")
     context.user_data.clear()
     return ConversationHandler.END
 
 async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена диалога рассылки."""
-    await update.message.reply_text("Действие отменено.")
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- ОБРАБОТЧИК КНОПОК ---
+# --- BUTTON HANDLER ---
 
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
 
-    # --- Обработка Админских кнопок ---
     if user_id in ADMIN_IDS:
         if data == 'admin_stats':
-            await query.answer()
-            stats = await get_stats() # AWAIT
-            await query.edit_message_text(
-                f"📊 **Статистика бота**\n\n"
-                f"- Всего пользователей: `{stats['total_users']}`\n"
-                f"- Активных подписок: `{stats['active_subscriptions']}`",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="admin_back")]])
-            )
+            stats = await get_stats()
+            await query.edit_message_text(f"Пользователей: {stats['total_users']}\nПодписок: {stats['active_subscriptions']}")
             return
-
         if data == 'admin_view_logs':
-            await query.answer()
             if os.path.exists(LOG_FILE_PATH):
-                await query.message.reply_document(document=open(LOG_FILE_PATH, 'rb'), filename='bot.log')
-            else:
-                await query.message.reply_text("Файл логов не найден.")
+                await query.message.reply_document(open(LOG_FILE_PATH, 'rb'), filename='log.txt')
+            else: await query.answer("Нет логов")
             return
 
-        if data == 'admin_back':
-            await query.edit_message_text("Панель администратора:", reply_markup=admin_keyboard)
-            return
-            
-        # 'admin_broadcast' обрабатывается в ConversationHandler
-
-    # --- Хелпер для выполнения действия после соглашения с правилами ---
-    async def proceed_with_action(action: str):
-        if action == "get_trial":
-            if await has_used_trial(user_id): # AWAIT
-                await query.answer("Вы уже использовали тестовый период.", show_alert=True)
-                return
-
-            await query.edit_message_text("⏳ Активируем ваш тестовый доступ, пожалуйста, подождите...")
-            await grant_subscription(context.application, user_id, 3, is_trial=True)
-            # grant_subscription сам отправит сообщение
-
-        elif action in TARIFFS:
-            if not YOOKASSA_ENABLED:
-                await query.answer("🚧 Система оплаты временно недоступна.", show_alert=True)
-                return
-            
-            tariff_info = TARIFFS[action]
-            description = f"{tariff_info['description']} (ID: {user_id})"
-            
-            # --- ИСПРАВЛЕНИЕ: Добавлен объект receipt ---
-            payment_data = {
-                "amount": {"value": f"{tariff_info['price']:.2f}", "currency": "RUB"},
-                "confirmation": {"type": "redirect", "return_url": f"https://t.me/{(await context.bot.get_me()).username}"},
-                "capture": True,
-                "description": description,
-                "metadata": {'user_id': user_id, 'tariff_callback': action},
-                "receipt": {
-                    "customer": {
-                        # ЮКасса требует почту для отправки чека. 
-                        # Т.к. мы ее не знаем, генерируем техническую почту на основе ID.
-                        "email": f"user_{user_id}@telegram.bot" 
-                    },
-                    "items": [
-                        {
-                            "description": tariff_info['description'],
-                            "quantity": "1.00",
-                            "amount": {
-                                "value": f"{tariff_info['price']:.2f}",
-                                "currency": "RUB"
-                            },
-                            "vat_code": 1, # ВАЖНО: 1 - это НДС 20%. Если у вас "Без НДС" или УСН, поставьте код 4 или другой, соответствующий вашей налоговой.
-                            "payment_mode": "full_payment",
-                            "payment_subject": "service" # Мы продаем услугу
-                        }
-                    ]
-                }
-            }
-
-            # Создаем платеж
-            try:
-                payment = Payment.create(payment_data, uuid.uuid4())
-                
-                payment_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Оплатить", url=payment.confirmation.confirmation_url)]])
-                
-                await query.edit_message_text(
-                    f"Вы выбрали: *{tariff_info['description']}*.\n"
-                    f"Сумма к оплате: *{tariff_info['price']} ₽*.\n\n"
-                    f"Нажмите кнопку ниже для перехода к оплате. Доступ активируется автоматически после успешного платежа.",
-                    reply_markup=payment_markup,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при создании платежа ЮКасса: {e}")
-                await query.answer("Ошибка при создании счета. Попробуйте позже.", show_alert=True)
-
-    # --- Обработка Пользовательских кнопок ---
-    
-    # 1. Проверка на согласие с правилами для действий покупки/триала
-    actions_requiring_agreement = ["get_trial"] + list(TARIFFS.keys())
-    
-    if data in actions_requiring_agreement:
-        if TERMS_URL and not await has_agreed_to_terms(user_id): # AWAIT
-            text = "Пожалуйста, ознакомьтесь с условиями использования сервиса и подтвердите свое согласие."
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📖 Ознакомиться с условиями", url=TERMS_URL)],
-                [InlineKeyboardButton("✅ Я согласен и продолжаю", callback_data=f"agree_terms:{data}")]
-            ])
-            await query.edit_message_text(text, reply_markup=markup)
+    if data == "get_trial":
+        if await has_used_trial(user_id):
+            await query.answer("Уже брали тест!", show_alert=True)
         else:
-            await query.answer()
-            await proceed_with_action(data)
+            await query.edit_message_text("Активация...")
+            await grant_subscription(context.application, user_id, 3, is_trial=True)
         return
 
-    # 2. Обработка нажатия "Я согласен"
-    if data.startswith("agree_terms:"):
-        original_action = data.split(":", 1)[1]
-        await mark_terms_as_agreed(user_id) # AWAIT
-        await query.answer("Согласие принято!")
-        await proceed_with_action(original_action)
+    if data in TARIFFS:
+        if not YOOKASSA_ENABLED:
+            await query.answer("Оплата недоступна", show_alert=True)
+            return
+        
+        tariff = TARIFFS[data]
+        # ВАЖНО: user_id передаем как строку, иначе ЮКасса может отбросить метаданные
+        payment_data = {
+            "amount": {"value": f"{tariff['price']:.2f}", "currency": "RUB"},
+            "confirmation": {"type": "redirect", "return_url": f"https://t.me/{(await context.bot.get_me()).username}"},
+            "capture": True,
+            "description": f"VPN {tariff['days']} дн. (ID: {user_id})",
+            "metadata": {'user_id': str(user_id), 'tariff_callback': data},
+            "receipt": {
+                "customer": {"email": f"user{user_id}@granatvpn.bot"},
+                "items": [{
+                    "description": tariff['description'],
+                    "quantity": "1.00",
+                    "amount": {"value": f"{tariff['price']:.2f}", "currency": "RUB"},
+                    "vat_code": 1,
+                    "payment_mode": "full_payment",
+                    "payment_subject": "service"
+                }]
+            }
+        }
+        try:
+            payment = Payment.create(payment_data, uuid.uuid4())
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Оплатить", url=payment.confirmation.confirmation_url)]])
+            await query.edit_message_text(f"К оплате: {tariff['price']}₽", reply_markup=markup)
+        except Exception as e:
+            logger.error(f"Ошибка создания платежа: {e}")
+            await query.answer("Ошибка создания ссылки", show_alert=True)
         return
 
-    # 3. Навигация
+    if data == "show_qr_remna":
+        await query.answer("QR...")
+        try:
+            async with RemnaAsyncManager(REMNAWAVE_PANEL_URL, REMNAWAVE_API_TOKEN) as mgr:
+                ud = await mgr.find_user_by_username(f"tg_{user_id}")
+                url = ud.get("subscriptionUrl")
+            qr = qrcode.make(url)
+            buf = io.BytesIO()
+            qr.save(buf, 'PNG')
+            buf.seek(0)
+            await query.message.reply_photo(buf, caption="QR для подключения")
+        except: await query.answer("Ошибка")
+        return
+        
     if data == "go_to_subscription":
-        await query.message.delete()
         await subscription_handler(update, context)
         return
 
     if data == "show_instructions":
-        text = "📖 **Инструкция по установке**\n\nДля подключения мы рекомендуем использовать приложение Happ. Инструкция по настройке доступна по кнопке ниже."
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📄 Открыть инструкцию", url=SET_URL)],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_vpn")]
-        ])
-        await query.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(f"Инструкция: {SET_URL}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_vpn")]]))
         return
 
-    if data == "back_to_vpn" or data == "back_to_vpn_from_qr":
-        # Если сообщение с картинкой, удаляем его и шлем новое меню, иначе редактируем
-        if data == "back_to_vpn_from_qr":
-            await query.message.delete()
-            await my_vpn_handler(update, context)
-        else:
-            await my_vpn_handler(update, context)
+    if data == "back_to_vpn":
+        await my_vpn_handler(update, context)
         return
 
-    # 4. Показ QR-кода
-    if data == "show_qr_remna":
-        await query.answer("Генерирую QR-код...")
-        try:
-            username_in_panel = f"tg_{user_id}"
-            async with RemnaAsyncManager(REMNAWAVE_PANEL_URL, REMNAWAVE_API_TOKEN) as mgr:
-                user_data = await mgr.find_user_by_username(username_in_panel)
-                if not user_data or not user_data.get("subscriptionUrl"):
-                    await query.answer("Ошибка: не удалось найти вашу подписку.", show_alert=True)
-                    return
-                sub_url = user_data.get("subscriptionUrl")
+    await query.answer()
 
-            qr = qrcode.QRCode(border=1)
-            qr.add_data(sub_url)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            
-            buffer = io.BytesIO()
-            img.save(buffer, 'PNG')
-            buffer.seek(0)
-            
-            await query.message.reply_photo(
-                photo=buffer,
-                caption="📲 Отсканируйте этот QR-код в вашем VPN-приложении для быстрой настройки.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_vpn_from_qr")]])
-            )
-            # Удаляем старое текстовое сообщение меню, чтобы не засорять чат
-            await query.message.delete()
-            
-        except Exception as e:
-            logger.error(f"Ошибка при генерации QR-кода для {user_id}: {e}")
-            await query.answer("Произошла ошибка при создании QR-кода.", show_alert=True)
-        return
-
-    # Если ничего не подошло
-    await query.answer("Неизвестная команда")
-
-
-# --- ВЕБХУК ЮKASSA ---
+# --- ВЕБХУК ---
 
 async def yookassa_webhook_handler(request: web.Request):
     application = request.app['bot_app']
+    
+    # 1. Читаем сырое тело запроса для отладки
     try:
-        data = await request.json()
-        event = data.get('event')
-        logger.info(f"Получен вебхук от ЮKassa: {event}")
+        body_bytes = await request.read()
+        body_str = body_bytes.decode('utf-8')
+        logger.info(f"WEBHOOK RAW BODY: {body_str}")
         
-        if event == 'payment.succeeded':
-            payment_object = data.get('object', {})
-            payment_id = payment_object.get('id')
-            metadata = payment_object.get('metadata', {})
-            user_id = metadata.get('user_id')
-            tariff_callback = metadata.get('tariff_callback')
-            amount = payment_object.get('amount', {}).get('value')
+        if not body_str:
+            return web.Response(status=400, text="Empty body")
             
-            if not all([payment_id, user_id, tariff_callback, tariff_callback in TARIFFS]):
-                logger.error(f"Некорректные метаданные в вебхуке: {metadata}")
-                return web.Response(status=400)
-            
-            logger.info(f"Успешная оплата: payment_id={payment_id}, user_id={user_id}, tariff='{tariff_callback}', amount={amount}")
-            
-            # 1. Сохраняем платеж в БД (чтобы избежать дублей)
-            try:
-                await add_payment(payment_id, int(user_id), float(amount), tariff_callback) # AWAIT
-            except Exception as e:
-                logger.warning(f"Ошибка сохранения платежа (возможно дубль): {e}")
+        data = json.loads(body_str)
+    except Exception as e:
+        logger.error(f"WEBHOOK: Ошибка чтения JSON: {e}")
+        return web.Response(status=400)
 
-            # 2. Запускаем обработку (выдачу)
-            asyncio.create_task(process_payment(application, payment_id, int(user_id), tariff_callback))
+    try:
+        event = data.get('event')
+        if event == 'payment.succeeded':
+            obj = data.get('object', {})
+            payment_id = obj.get('id')
+            metadata = obj.get('metadata', {})
+            
+            # Извлекаем данные
+            user_id = metadata.get('user_id')
+            tariff = metadata.get('tariff_callback')
+            amount = obj.get('amount', {}).get('value')
+            
+            logger.info(f"WEBHOOK: Parsed - id={payment_id}, user={user_id}, tariff={tariff}")
+
+            if not all([payment_id, user_id, tariff]):
+                logger.error("WEBHOOK: Отсутствуют обязательные поля в метаданных!")
+                # Возвращаем 200, чтобы ЮКасса не долбила нас повторами ошибочного платежа
+                return web.Response(status=200)
+
+            # 2. Сохраняем/Обновляем платеж в БД
+            try:
+                # Преобразуем user_id в int, amount в float
+                await add_payment(payment_id, int(user_id), float(amount), tariff)
+            except Exception as e:
+                logger.warning(f"WEBHOOK: Ошибка при записи в БД (возможно дубль): {e}")
+
+            # 3. Запускаем выдачу в фоне
+            asyncio.create_task(process_payment(application, payment_id, int(user_id), tariff))
             
     except Exception as e:
-        error_message = f"❗️ Ошибка в обработчике вебхука ЮKassa: {e}"
-        logger.critical(error_message, exc_info=True)
+        logger.critical(f"WEBHOOK: Внутренняя ошибка обработчика: {e}", exc_info=True)
         return web.Response(status=500)
         
     return web.Response(status=200)
 
 async def scheduler_wrapper(application: Application):
-    """Обертка для запуска планировщика уведомлений."""
-    logger.info("SCHEDULER: Служба уведомлений запущена.")
+    await asyncio.sleep(10) # Даем боту запуститься
     while True:
         try:
             await run_notifications(application.bot)
         except Exception as e:
-            logger.error(f"SCHEDULER: Ошибка в цикле планировщика: {e}")
-        await asyncio.sleep(3600) # Проверка раз в час
-
-# --- ЗАПУСК БОТА ---
+            logger.error(f"Scheduler error: {e}")
+        await asyncio.sleep(3600)
 
 async def main():
     if not BOT_TOKEN:
-        logger.critical("Критическая ошибка: не установлен BOT_TOKEN!")
+        print("NO BOT TOKEN")
         return
 
-    # Инициализация БД
-    await initialize_db() # AWAIT
+    await initialize_db()
     
-    # Инициализация бота
-    rate_limiter = AIORateLimiter()
-    application = Application.builder().token(BOT_TOKEN).rate_limiter(rate_limiter).build()
-
-    # Восстановление незавершенных платежей
-    pending_payments = await get_pending_payments() # AWAIT
-    if pending_payments:
-        logger.info(f"Обнаружено {len(pending_payments)} незавершенных платежей. Запуск обработки...")
-        for payment_id, user_id, tariff in pending_payments:
-            asyncio.create_task(process_payment(application, payment_id, user_id, tariff))
-
-    # --- Настройка Хендлеров ---
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    # 1. ConversationHandler для рассылки
-    broadcast_handler = ConversationHandler(
+    # Handlers
+    bh = ConversationHandler(
         entry_points=[CallbackQueryHandler(broadcast_start, pattern='^admin_broadcast$')],
         states={
-            BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_get_message)],
-            BROADCAST_CONFIRM: [CallbackQueryHandler(broadcast_confirm, pattern='^broadcast_confirm_.*$')]
+            BROADCAST_MESSAGE: [MessageHandler(filters.TEXT, broadcast_get_message)],
+            BROADCAST_CONFIRM: [CallbackQueryHandler(broadcast_confirm, pattern='^broadcast_')]
         },
-        fallbacks=[CommandHandler('cancel', broadcast_cancel)],
-        per_message=False
+        fallbacks=[CommandHandler('cancel', broadcast_cancel)]
     )
-    application.add_handler(broadcast_handler)
+    app.add_handler(bh)
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('grant', grant_days_command))
+    app.add_handler(CommandHandler('admin', admin_command))
+    app.add_handler(MessageHandler(filters.Regex('^🔐'), my_vpn_handler))
+    app.add_handler(MessageHandler(filters.Regex('^💎'), subscription_handler))
+    app.add_handler(MessageHandler(filters.Regex('^🎁'), referral_handler))
+    app.add_handler(MessageHandler(filters.Regex('^💬'), help_handler))
+    app.add_handler(CallbackQueryHandler(button_callback_handler))
+    app.add_error_handler(error_handler)
 
-    # 2. Команды
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('admin', admin_command))
-    application.add_handler(CommandHandler('grant', grant_days_command))
-
-    # 3. Текстовое меню
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🔐 Мой VPN$'), my_vpn_handler))
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^💎 Подписка$'), subscription_handler))
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^🎁 Пригласить друга$'), referral_handler))
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex('^💬 Помощь$'), help_handler))
-
-    # 4. Колбэки
-    application.add_handler(CallbackQueryHandler(button_callback_handler))
-    # В функции main() добавьте:
-    application.add_error_handler(error_handler)
-
-    # --- Настройка Веб-сервера (Webhooks) ---
-    webhook_app = web.Application()
-    webhook_app['bot_app'] = application
-    webhook_app.router.add_post("/yookassa_webhook", yookassa_webhook_handler)
-    
-    runner = web.AppRunner(webhook_app)
+    # Webhook server
+    wh_app = web.Application()
+    wh_app['bot_app'] = app
+    wh_app.router.add_post("/yookassa_webhook", yookassa_webhook_handler)
+    runner = web.AppRunner(wh_app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', WEBHOOK_PORT)
-
-    try:
-        await application.initialize()
-        await application.start()
-        
-        # Запускаем планировщик
-        asyncio.create_task(scheduler_wrapper(application))
-        
-        # Запускаем Polling
-        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        logger.info("BOT: Polling запущен...")
-
-        if YOOKASSA_ENABLED:
-            await site.start()
-            logger.info(f"WEBHOOK: Сервер запущен на порту {WEBHOOK_PORT}...")
-
-        await asyncio.Event().wait()
-
-    finally:
-        logger.info("Остановка сервисов...")
-        if application.updater and application.updater.running:
-            await application.updater.stop()
-        if application.running:
-            await application.stop()
-        await application.shutdown()
-        await runner.cleanup()
-        logger.info("Все сервисы успешно остановлены.")
+    
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await site.start()
+    
+    asyncio.create_task(scheduler_wrapper(app))
+    
+    logger.info("BOT STARTED")
+    await asyncio.Event().wait()
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Бот остановлен.")
+    except: pass
