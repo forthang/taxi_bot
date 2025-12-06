@@ -482,7 +482,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                     "description": tariff['description'],
                     "quantity": "1.00",
                     "amount": {"value": f"{tariff['price']:.2f}", "currency": "RUB"},
-                    "vat_code": 1,
+                    "vat_code": 4,
                     "payment_mode": "full_payment",
                     "payment_subject": "service"
                 }]
