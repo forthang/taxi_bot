@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from telegram import Application
+from telegram.ext import Application
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 

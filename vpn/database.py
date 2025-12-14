@@ -127,9 +127,14 @@ async def update_or_create_subscription(user_id: int, vless_uuid: str, duration_
         start_from = datetime.now(timezone.utc)
         if existing_sub and existing_sub['end_date']:
             current_end_date = existing_sub['end_date']
-            if isinstance(current_end_date, str):
+            # Убеждаемся что дата имеет timezone
+            if isinstance(current_end_date, datetime):
+                if current_end_date.tzinfo is None:
+                    current_end_date = current_end_date.replace(tzinfo=timezone.utc)
+            else:
+                # Если строка, парсим
                 try:
-                    current_end_date = datetime.fromisoformat(current_end_date.replace('Z', '+00:00'))
+                    current_end_date = datetime.fromisoformat(str(current_end_date).replace('Z', '+00:00'))
                 except:
                     current_end_date = datetime.now(timezone.utc)
             
