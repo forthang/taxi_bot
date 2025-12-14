@@ -18,13 +18,13 @@ from api import RemnaAsyncManager, RemnaAPIError
 logger = logging.getLogger(__name__)
 
 PRE_EXPIRATION_TEXT = (
-    "⏳ Ваша подписка на Granat VPN истекает в течение 24 часов.\n\n"
+    "⏳ Ваша подписка на internet vseGda истекает в течение 24 часов.\n\n"
     "Чтобы не терять доступ к быстрому и безопасному интернету, "
     "рекомендуем продлить ее прямо сейчас."
 )
 
 EXPIRATION_TEXT = (
-    "🚫 Ваша подписка на Granat VPN истекла.\n\n"
+    "🚫 Ваша подписка на internet vseGda истекла.\n\n"
     "Доступ к серверам приостановлен. Чтобы продолжить пользоваться VPN, "
     "пожалуйста, оформите новую подписку в разделе «💎 Подписка»."
 )
@@ -85,11 +85,13 @@ async def run_notifications(bot: Bot):
 
     # Уведомления за 24 часа
     try:
+        # ДОБАВЛЕН AWAIT
         users_to_pre_notify = await get_subscriptions_to_pre_notify()
         logger.info(f"SCHEDULER_NOTIFY: Найдено {len(users_to_pre_notify)} пользователей для предварительного уведомления.")
         for (user_id,) in users_to_pre_notify:
             try:
                 await bot.send_message(chat_id=user_id, text=PRE_EXPIRATION_TEXT, reply_markup=keyboard)
+                # ДОБАВЛЕН AWAIT
                 await mark_pre_notification_as_sent(user_id)
                 logger.info(f"SCHEDULER_NOTIFY: Отправлено предварительное уведомление пользователю {user_id}.")
             except (Forbidden, BadRequest) as e:
