@@ -127,28 +127,25 @@ async def update_or_create_subscription(user_id: int, vless_uuid: str, duration_
         start_from = datetime.now(timezone.utc)
         if existing_sub and existing_sub['end_date']:
             current_end_date = existing_sub['end_date']
-            # Убеждаемся что дата имеет timezone
-            if isinstance(current_end_date, datetime):
-                if current_end_date.tzinfo is None:
-                    current_end_date = current_end_date.replace(tzinfo=timezone.utc)
-            else:
-                # Если строка, парсим
-                try:
-                    current_end_date = datetime.fromisoformat(str(current_end_date).replace('Z', '+00:00'))
-                except:
-                    current_end_date = datetime.now(timezone.utc)
+            # PostgreSQL возвращает naive datetime, добавляем UTC
+            if hasattr(current_end_date, 'tzinfo') and current_end_date.tzinfo is None:
+                current_end_date = current_end_date.replace(tzinfo=timezone.utc)
             
             if current_end_date > start_from:
                 start_from = current_end_date
 
         new_end_date = start_from + timedelta(days=duration_days)
         
+        # Убираем timezone для PostgreSQL
+        start_from_naive = start_from.replace(tzinfo=None)
+        new_end_date_naive = new_end_date.replace(tzinfo=None)
+        
         await conn.execute("""
             INSERT INTO subscriptions (user_id, vless_uuid, status, start_date, end_date, notification_sent, pre_expiration_notification_sent) 
             VALUES ($1, $2, 'active', $3, $4, 0, 0)
             ON CONFLICT(vless_uuid) DO UPDATE SET
             end_date = EXCLUDED.end_date, status = 'active', notification_sent = 0, pre_expiration_notification_sent = 0
-        """, user_id, vless_uuid, start_from, new_end_date)
+        """, user_id, vless_uuid, start_from_naive, new_end_date_naive)
     finally:
         await conn.close()
 
