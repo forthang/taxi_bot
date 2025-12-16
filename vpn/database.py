@@ -10,12 +10,42 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+async def create_database_if_not_exists():
+    """Создание базы данных если она не существует"""
+    try:
+        # Подключаемся к postgres для создания базы
+        db_url_parts = DATABASE_URL.split('/')
+        postgres_url = '/'.join(db_url_parts[:-1]) + '/postgres'
+        
+        conn = await asyncpg.connect(postgres_url)
+        try:
+            # Проверяем существует ли база данных
+            db_name = db_url_parts[-1]
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", db_name
+            )
+            
+            if not exists:
+                await conn.execute(f'CREATE DATABASE "{db_name}"')
+                logger.info(f"База данных {db_name} создана")
+            else:
+                logger.info(f"База данных {db_name} уже существует")
+                
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка при создании базы данных: {e}")
+        raise
+
 async def get_connection():
     """Получение соединения с базой данных"""
     return await asyncpg.connect(DATABASE_URL)
 
 async def initialize_db():
     """Инициализация базы данных"""
+    # Сначала создаем базу данных если её нет
+    await create_database_if_not_exists()
+    
     conn = await get_connection()
     try:
         # Создание таблиц
