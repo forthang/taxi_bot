@@ -18,7 +18,7 @@ from aiohttp import web
 from yookassa import Configuration, Payment
 
 # Локальные импорты
-from config import config, TARIFFS
+from config import config, TARIFFS, load_tariffs_from_db
 from database import initialize_db, has_used_trial, add_payment
 from handlers import (
     start_handler, my_vpn_handler, subscription_handler, 
@@ -29,7 +29,8 @@ from admin import (
     AdminPanel, broadcast_start, broadcast_get_message, broadcast_confirm,
     grant_subscription_start, grant_subscription_get_user, grant_subscription_get_days,
     find_user_start, find_user_get_info, conversation_cancel,
-    BROADCAST_MESSAGE, BROADCAST_CONFIRM, GRANT_USER_ID, GRANT_DAYS, USER_INFO_ID
+    edit_tariff_start, edit_tariff_set_price,
+    BROADCAST_MESSAGE, BROADCAST_CONFIRM, GRANT_USER_ID, GRANT_DAYS, USER_INFO_ID, SET_PRICE_VALUE
 )
 from scheduler import run_notifications
 
@@ -110,6 +111,9 @@ async def button_callback_handler(update: Update, context):
             return
         elif data == "admin_pending_payments":
             await AdminPanel.show_pending_payments(update, context)
+            return
+        elif data == "admin_tariffs":
+            await AdminPanel.show_tariffs(update, context)
             return
 
     # Пользовательские команды
@@ -253,6 +257,9 @@ async def main():
     # Инициализация БД
     await initialize_db()
     
+    # Загрузка тарифов из БД
+    await load_tariffs_from_db()
+    
     # Создание приложения
     app = Application.builder().token(config.BOT_TOKEN).build()
     
@@ -283,10 +290,19 @@ async def main():
         fallbacks=[CommandHandler('cancel', conversation_cancel)]
     )
     
+    tariff_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_tariff_start, pattern='^admin_edit_tariff_')],
+        states={
+            SET_PRICE_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_tariff_set_price)]
+        },
+        fallbacks=[CommandHandler('cancel', conversation_cancel)]
+    )
+    
     # Регистрация обработчиков
     app.add_handler(broadcast_conv)
     app.add_handler(grant_conv)
     app.add_handler(find_user_conv)
+    app.add_handler(tariff_conv)
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('admin', admin_command))
     app.add_handler(CommandHandler('grant', grant_command))

@@ -13,7 +13,7 @@ from database import (
     get_stats, get_all_user_ids, get_payment_info, get_pending_payments,
     get_active_subscription, update_or_create_subscription
 )
-from config import config
+from config import config, TARIFFS, save_tariff_price
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 BROADCAST_MESSAGE, BROADCAST_CONFIRM = range(2)
 GRANT_USER_ID, GRANT_DAYS = range(2, 4)
 USER_INFO_ID = 4
+SET_PRICE_TARIFF, SET_PRICE_VALUE = range(5, 7)
 
 class AdminPanel:
     @staticmethod
@@ -33,6 +34,7 @@ class AdminPanel:
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton("👥 Управление пользователями", callback_data="admin_users")],
             [InlineKeyboardButton("💰 Платежи", callback_data="admin_payments")],
+            [InlineKeyboardButton("💵 Тарифы", callback_data="admin_tariffs")],
             [InlineKeyboardButton("📄 Логи", callback_data="admin_logs")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton("⚙️ Система", callback_data="admin_system")]
@@ -63,6 +65,25 @@ class AdminPanel:
             [InlineKeyboardButton("💾 Бэкап БД", callback_data="admin_backup_db")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")]
         ])
+
+    @staticmethod
+    def get_tariffs_keyboard() -> InlineKeyboardMarkup:
+        buttons = []
+        for key, tariff in TARIFFS.items():
+            buttons.append([InlineKeyboardButton(
+                f"{tariff['description']} — {tariff['price']:.0f}₽", 
+                callback_data=f"admin_edit_tariff_{key}"
+            )])
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")])
+        return InlineKeyboardMarkup(buttons)
+
+    @staticmethod
+    async def show_tariffs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        text = "💵 **Управление тарифами**\n\nВыберите тариф для изменения цены:"
+        await query.edit_message_text(text, reply_markup=AdminPanel.get_tariffs_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     @staticmethod
     async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,3 +335,53 @@ async def conversation_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear()
     await update.message.reply_text("❌ Операция отменена")
     return ConversationHandler.END
+
+# --- Изменение цен тарифов ---
+
+async def edit_tariff_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    tariff_key = query.data.replace("admin_edit_tariff_", "")
+    if tariff_key not in TARIFFS:
+        await query.edit_message_text("❌ Тариф не найден")
+        return ConversationHandler.END
+    
+    context.user_data['edit_tariff_key'] = tariff_key
+    tariff = TARIFFS[tariff_key]
+    
+    await query.edit_message_text(
+        f"💵 **Изменение цены тарифа**\n\n"
+        f"Тариф: {tariff['description']}\n"
+        f"Текущая цена: `{tariff['price']:.0f}₽`\n\n"
+        f"Введите новую цену (только число):",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return SET_PRICE_VALUE
+
+async def edit_tariff_set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        new_price = float(update.message.text.strip().replace(',', '.'))
+        if new_price <= 0:
+            raise ValueError()
+        
+        tariff_key = context.user_data.get('edit_tariff_key')
+        if not tariff_key or tariff_key not in TARIFFS:
+            await update.message.reply_text("❌ Ошибка: тариф не найден")
+            return ConversationHandler.END
+        
+        await save_tariff_price(tariff_key, new_price)
+        
+        await update.message.reply_text(
+            f"✅ **Цена обновлена**\n\n"
+            f"Тариф: {TARIFFS[tariff_key]['description']}\n"
+            f"Новая цена: `{new_price:.0f}₽`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        context.user_data.clear()
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Введите положительное число:")
+        return SET_PRICE_VALUE

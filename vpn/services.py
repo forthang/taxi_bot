@@ -10,12 +10,16 @@ from telegram.error import BadRequest, Forbidden
 from database import (
     get_any_subscription, update_or_create_subscription, 
     mark_trial_as_used, log_referral_purchase,
-    add_payment, update_payment_status, get_payment_info
+    add_payment, update_payment_status, get_payment_info,
+    ensure_user_exists
 )
 from api import RemnaAsyncManager, RemnaAPIError
 from config import config, TARIFFS
 
 logger = logging.getLogger(__name__)
+
+# 500 GB в байтах
+TRAFFIC_LIMIT_BYTES = 500 * 1024 * 1024 * 1024  # 536870912000
 
 def safe_parse_datetime(date_obj):
     if not date_obj:
@@ -55,6 +59,9 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
         return
 
     try:
+        # Гарантируем что пользователь существует в БД (исправление foreign key constraint)
+        await ensure_user_exists(user_id)
+        
         # Работа с API Remnawave
         username_in_panel = f"tg_{user_id}"
         old_sub_data = await get_any_subscription(user_id) 
@@ -71,15 +78,23 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
         async with RemnaAsyncManager(config.REMNAWAVE_PANEL_URL, config.REMNAWAVE_API_TOKEN) as mgr:
             user_in_panel = await mgr.find_user_by_username(username_in_panel)
             if user_in_panel:
+                # Обновляем существующего пользователя
                 await mgr.update_user(
                     username=username_in_panel, 
-                    updates={"expireAt": new_expire_dt.isoformat().replace('+00:00', 'Z')}
+                    updates={
+                        "expireAt": new_expire_dt.isoformat().replace('+00:00', 'Z'),
+                        "trafficLimitBytes": TRAFFIC_LIMIT_BYTES,
+                        "trafficLimitStrategy": "MONTH"
+                    }
                 )
             else:
+                # Создаем нового пользователя с лимитом трафика
                 await mgr.create_user(
                     username=username_in_panel, 
                     squad_uuid=config.REMNAWAVE_SQUAD_UUID, 
-                    expire_at=new_expire_dt
+                    expire_at=new_expire_dt,
+                    trafficLimitBytes=TRAFFIC_LIMIT_BYTES,
+                    trafficLimitStrategy="MONTH"
                 )
         
         # Обновление в БД

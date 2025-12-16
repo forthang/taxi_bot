@@ -53,10 +53,33 @@ class Config:
     def yookassa_enabled(self) -> bool:
         return all([self.YOOKASSA_SHOP_ID, self.YOOKASSA_SECRET_KEY, self.SERVER_BASE_URL])
 
-# Тарифы
-TARIFFS = {
+# Дефолтные тарифы (могут быть переопределены из БД)
+DEFAULT_TARIFFS = {
     "buy_30": {"price": 299.00, "days": 30, "description": "🗓️ Подписка на 1 месяц"},
     "buy_90": {"price": 799.00, "days": 90, "description": "🌱 Подписка на 3 месяца"}
 }
 
+# Глобальная переменная для тарифов (обновляется из БД)
+TARIFFS = DEFAULT_TARIFFS.copy()
+
 config = Config()
+
+async def load_tariffs_from_db():
+    """Загружает тарифы из БД"""
+    global TARIFFS
+    try:
+        from database import get_setting
+        for key in DEFAULT_TARIFFS:
+            price_str = await get_setting(f"tariff_{key}_price")
+            if price_str:
+                TARIFFS[key]["price"] = float(price_str)
+    except Exception:
+        pass  # Используем дефолтные значения
+
+async def save_tariff_price(tariff_key: str, price: float):
+    """Сохраняет цену тарифа в БД"""
+    global TARIFFS
+    from database import set_setting
+    await set_setting(f"tariff_{tariff_key}_price", str(price))
+    if tariff_key in TARIFFS:
+        TARIFFS[tariff_key]["price"] = price

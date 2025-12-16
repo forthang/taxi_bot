@@ -1,65 +1,108 @@
-# 🚀 Быстрый запуск VPN Bot
+# VPN Bot - Production Deployment
 
-## 1. Настройка
+## Быстрый старт
 
-Отредактируйте `.env` файл:
+### 1. Настройка окружения
+
+Скопируйте `.env.example` в `.env` и заполните все переменные:
 
 ```bash
-# ОБЯЗАТЕЛЬНО! Укажите токен вашего бота
-BOT_TOKEN="1234567890:AAAA-your-bot-token-here"
-
-# ОБЯЗАТЕЛЬНО! ID администраторов (ваш Telegram ID)
-ADMIN_IDS="123456789,987654321"
-
-# Остальные параметры можете оставить как есть для тестирования
+cp .env.example .env
+nano .env
 ```
 
-## 2. Запуск
+### 2. Запуск
 
 ```bash
-# Дайте права на выполнение скрипта
-chmod +x start.sh
-
-# Запустите бота
-./start.sh
+docker-compose up -d --build
 ```
 
-## 3. Проверка
-
-После запуска:
-- Откройте вашего бота в Telegram
-- Отправьте `/start`
-- Отправьте `/admin` (если вы админ)
-
-## 4. Мониторинг
+### 3. Проверка статуса
 
 ```bash
-# Просмотр логов в реальном времени
-docker-compose logs -f bot
-
-# Статус сервисов
 docker-compose ps
+docker-compose logs -f bot
+```
 
-# Остановка
+## Миграция существующих пользователей
+
+Если у вас уже есть пользователи в Remnawave панели, запустите миграцию для установки лимита трафика:
+
+```bash
+docker-compose exec bot python migrate_users.py
+```
+
+Это установит:
+- trafficLimitBytes: 500 GB
+- trafficLimitStrategy: MONTH (сброс каждый месяц)
+
+## Управление
+
+### Перезапуск
+```bash
+docker-compose restart bot
+```
+
+### Просмотр логов
+```bash
+docker-compose logs -f bot
+```
+
+### Остановка
+```bash
 docker-compose down
 ```
 
-## 🔧 Настройка платежей и VPN
+### Бэкап БД
+```bash
+docker-compose exec db pg_dump -U postgres vpn_bot_db > backup_$(date +%Y%m%d).sql
+```
 
-Для полной работы настройте в `.env`:
+### Восстановление БД
+```bash
+cat backup.sql | docker-compose exec -T db psql -U postgres vpn_bot_db
+```
 
-1. **YooKassa** (для приема платежей):
-   - `YOOKASSA_SHOP_ID`
-   - `YOOKASSA_SECRET_KEY`
+## Админ-панель
 
-2. **Remnawave** (для VPN):
-   - `REMNAWAVE_PANEL_URL`
-   - `REMNAWAVE_API_TOKEN`
-   - `REMNAWAVE_SQUAD_UUID`
+Команды для администраторов (ID должен быть в ADMIN_IDS):
 
-3. **Домен** (для webhook):
-   - `SERVER_BASE_URL`
+- `/admin` - открыть панель администратора
+- `/grant <user_id> <days>` - выдать подписку пользователю
 
----
+### Функции админ-панели:
+- 📊 Статистика - общая статистика бота
+- 👥 Управление пользователями - поиск и выдача подписок
+- 💰 Платежи - просмотр ожидающих платежей
+- 💵 Тарифы - изменение цен на подписки
+- 📄 Логи - скачать файл логов
+- 📢 Рассылка - отправка сообщений всем пользователям
+- ⚙️ Система - системные функции
 
-**Готово!** Бот работает с PostgreSQL и полноценной админкой 🎉
+## Структура данных
+
+### Docker volumes
+- `postgres_data` - данные PostgreSQL (сохраняются при перезапуске)
+- `./logs` - логи бота
+- `./data` - дополнительные данные
+
+### Таблицы БД
+- `users` - пользователи бота
+- `subscriptions` - подписки
+- `payments` - платежи
+- `referral_sources` - источники рефералов
+- `settings` - настройки (включая цены тарифов)
+
+## Troubleshooting
+
+### Ошибка foreign key constraint
+Исправлена в текущей версии. Бот автоматически создает запись пользователя перед созданием подписки.
+
+### Бот не отвечает
+1. Проверьте логи: `docker-compose logs bot`
+2. Проверьте health check: `curl http://localhost:8005/health`
+3. Перезапустите: `docker-compose restart bot`
+
+### Проблемы с БД
+1. Проверьте статус: `docker-compose exec db pg_isready`
+2. Проверьте логи: `docker-compose logs db`

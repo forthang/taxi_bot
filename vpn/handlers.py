@@ -13,7 +13,7 @@ from database import (
     add_user, get_active_subscription, has_used_trial, 
     get_referral_program_stats, get_any_subscription,
     update_or_create_subscription, mark_trial_as_used,
-    log_referral_purchase
+    log_referral_purchase, ensure_user_exists
 )
 from api import RemnaAsyncManager, RemnaAPIError
 from config import config, TARIFFS

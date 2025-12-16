@@ -144,6 +144,7 @@ class RemnaAsyncManager:
     async def create_user(self, username: str, squad_uuid: Optional[str], expire_at: datetime, **extra) -> Dict[str, Any]:
         """
         Создает пользователя (POST /api/users).
+        Поддерживает trafficLimitBytes и trafficLimitStrategy.
         """
         logger.debug(f"Вызов create_user для username={username}")
         if expire_at.tzinfo is None:
@@ -153,8 +154,16 @@ class RemnaAsyncManager:
             "username": username,
             "status": "ACTIVE",
             "expireAt": expire_at.isoformat().replace("+00:00", "Z"),
-            **extra,
         }
+        
+        # Добавляем лимит трафика если указан
+        if "trafficLimitBytes" in extra:
+            payload["trafficLimitBytes"] = extra.pop("trafficLimitBytes")
+        if "trafficLimitStrategy" in extra:
+            payload["trafficLimitStrategy"] = extra.pop("trafficLimitStrategy")
+        
+        # Остальные параметры
+        payload.update(extra)
 
         if squad_uuid:
             payload["activeInternalSquads"] = [squad_uuid]
