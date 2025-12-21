@@ -70,7 +70,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await add_user(user.id, user.username, user.first_name, user.last_name, source=source, referrer_id=referrer_id)
     
-    text = f"👋 Привет, {user.first_name or 'друг'}!\n\nБот **Интернет всегда** готов к работе."
+    text = f"👋 Привет, {user.first_name or 'друг'}!\n\nЭто бот **Интернет Всегда** — твой быстрый и надежный доступ к любым сервисам ."
     await update.message.reply_text(text, reply_markup=main_keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def my_vpn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,7 +116,7 @@ async def my_vpn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 limit = user_data.get('trafficLimit') or user_data.get('dataLimit') or 0
                 traffic_info = f"📊 Трафик: {format_bytes(used)} / {format_bytes(limit) if limit else '∞'}"
 
-            text = f"✅ **Подписка до {end_date_formatted}**\n{traffic_info}\n\nВаша ссылка:\n`{sub_url}`"
+            text = f"✅ **Подписка до {end_date_formatted}**\n{traffic_info}\n\nВаша ссылка:\n`{sub_url}`\n\nОбязательно прочтите инструкцию!"
             
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📲 QR-код", callback_data="show_qr_remna")],
