@@ -260,6 +260,28 @@ class RemnaAsyncManager:
                     return [self._normalize_user(u) for u in v]
         return []
 
+    async def get_all_users_v2(self) -> Dict[str, Any]:
+        """GET /api/users/v2 - возвращает всех пользователей с полной информацией"""
+        logger.debug("Вызов get_all_users_v2")
+        response_data = await self._request("GET", "users")
+        
+        result = {"total": 0, "users": []}
+        if isinstance(response_data, dict):
+            users_list = response_data.get("response") or response_data.get("users") or response_data.get("items") or []
+            if isinstance(users_list, list):
+                result["users"] = [self._normalize_user(u) for u in users_list]
+                result["total"] = len(result["users"])
+        return result
+
+    async def get_active_users_from_api(self) -> List[Dict[str, Any]]:
+        """Получает только активных пользователей из API"""
+        all_users = await self.get_all_users_v2()
+        active = []
+        for user in all_users.get("users", []):
+            if user.get("status") == "ACTIVE":
+                active.append(user)
+        return active
+
     async def assign_internal_squads_to_user_by_uuid(self, user_uuid: str, squad_uuids: List[str]) -> Dict[str, Any]:
         """
         POST /api/users/bulk/update-squads

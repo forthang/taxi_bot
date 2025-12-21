@@ -32,7 +32,7 @@ from admin import (
     edit_tariff_start, edit_tariff_set_price,
     BROADCAST_MESSAGE, BROADCAST_CONFIRM, GRANT_USER_ID, GRANT_DAYS, USER_INFO_ID, SET_PRICE_VALUE
 )
-from scheduler import run_notifications
+from scheduler import run_notifications, send_logs_to_admins
 
 # Настройка логирования
 os.makedirs(config.LOG_DIR, exist_ok=True)
@@ -111,6 +111,12 @@ async def button_callback_handler(update: Update, context):
             return
         elif data == "admin_pending_payments":
             await AdminPanel.show_pending_payments(update, context)
+            return
+        elif data == "admin_completed_payments":
+            await AdminPanel.show_completed_payments(update, context)
+            return
+        elif data == "admin_payment_stats":
+            await AdminPanel.show_payment_stats(update, context)
             return
         elif data == "admin_tariffs":
             await AdminPanel.show_tariffs(update, context)
@@ -248,6 +254,23 @@ async def scheduler_task(application: Application):
             logger.error(f"Scheduler error: {e}")
         await asyncio.sleep(3600)  # Каждый час
 
+async def daily_logs_task(application: Application):
+    """Ежедневная отправка логов админам"""
+    await asyncio.sleep(60)  # Ждем запуска бота
+    while True:
+        try:
+            now = datetime.now()
+            # Отправляем в 00:00
+            next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run = next_run.replace(day=now.day + 1)
+            wait_seconds = (next_run - now).total_seconds()
+            await asyncio.sleep(wait_seconds)
+            await send_logs_to_admins(application.bot)
+        except Exception as e:
+            logger.error(f"Daily logs task error: {e}")
+            await asyncio.sleep(3600)  # При ошибке ждем час
+
 async def main():
     """Главная функция"""
     if not config.BOT_TOKEN:
@@ -331,6 +354,7 @@ async def main():
     
     # Запуск планировщика
     asyncio.create_task(scheduler_task(app))
+    asyncio.create_task(daily_logs_task(app))
     
     logger.info(f"🚀 Бот запущен! Webhook порт: {config.WEBHOOK_PORT}")
     logger.info(f"📊 Админов: {len(config.ADMIN_IDS)}")

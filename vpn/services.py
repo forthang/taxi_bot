@@ -119,12 +119,22 @@ async def grant_subscription(application: Application, user_id: int, days: int, 
                 except (BadRequest, Forbidden):
                     pass
 
-        # Уведомление пользователя
+        # Уведомление пользователя с ключом
         if is_manual:
             message_text = f"✅ Администратор вручную начислил вам **{days} дней** подписки."
         else:
             message_type = "Тестовый доступ" if is_trial else "Подписка"
             message_text = f"✅ **{message_type} на {days} дней активирован!**\n\nВаша подписка продлена. Приятного пользования!"
+        
+        # Получаем ключ для отображения
+        try:
+            async with RemnaAsyncManager(config.REMNAWAVE_PANEL_URL, config.REMNAWAVE_API_TOKEN) as mgr:
+                user_data = await mgr.find_user_by_username(username_in_panel)
+                if user_data and user_data.get("subscriptionUrl"):
+                    sub_url = user_data.get("subscriptionUrl")
+                    message_text += f"\n\n🔑 **Ваш ключ:**\n`{sub_url}`\n\nОбязательно прочтите инструкцию в разделе «🔐 Мой VPN»!"
+        except Exception as e:
+            logger.warning(f"Не удалось получить ключ для {user_id}: {e}")
         
         await application.bot.send_message(
             chat_id=user_id, 

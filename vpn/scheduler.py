@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
+import os
+import glob
 from datetime import datetime, timezone
 from telegram import Bot
 from telegram.error import Forbidden, BadRequest
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-import os
 
 from database import (
     get_all_active_users_for_sync, sync_subscription_date,
@@ -14,6 +15,7 @@ from database import (
     get_subscriptions_to_notify, mark_subscription_as_expired
 )
 from api import RemnaAsyncManager, RemnaAPIError
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -50,31 +52,37 @@ async def run_notifications(bot: Bot):
     # --- ШАГ 1: Синхронизация дат ---
     logger.info("SCHEDULER: Начало синхронизации дат подписок с панелью.")
     try:
-        active_users_in_db = await get_all_active_users_for_sync()
-        logger.info(f"SCHEDULER_SYNC: Найдено {len(active_users_in_db)} активных пользователей в локальной БД для проверки.")
-        
-        if active_users_in_db:
-            async with RemnaAsyncManager(remnawave_panel_url, remnawave_api_token) as mgr:
-                for (user_id,) in active_users_in_db:
-                    username = f"tg_{user_id}"
-                    try:
-                        user_data = await mgr.find_user_by_username(username)
-                        if user_data and user_data.get("expireAt"):
-                            expire_str = user_data["expireAt"]
-                            # Обработка даты
-                            try:
-                                panel_date = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
-                            except ValueError:
-                                # Fallback если формат другой
-                                panel_date = datetime.strptime(expire_str.split('.')[0], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-
-                            await sync_subscription_date(user_id, panel_date, current_time)
-                        else:
-                            logger.warning(f"SCHEDULER_SYNC: Пользователь {username} не найден в панели, но активен в БД.")
-                    except RemnaAPIError as e:
-                        logger.error(f"SCHEDULER_SYNC: Ошибка API при получении данных для {username}: {e}")
+        async with RemnaAsyncManager(remnawave_panel_url, remnawave_api_token) as mgr:
+            # Получаем актуальных пользователей из API вместо БД
+            all_users_response = await mgr.get_all_users_v2()
+            all_users = all_users_response.get("users", [])
+            logger.info(f"SCHEDULER_SYNC: Получено {len(all_users)} пользователей из API Remnawave.")
+            
+            for user_data in all_users:
+                username = user_data.get("username", "")
+                if not username.startswith("tg_"):
+                    continue
                     
-                    await asyncio.sleep(0.1) # Пауза, чтобы не перегружать API
+                try:
+                    user_id = int(username.replace("tg_", ""))
+                except ValueError:
+                    continue
+                
+                expire_str = user_data.get("expireAt")
+                if not expire_str:
+                    continue
+                    
+                try:
+                    panel_date = datetime.fromisoformat(expire_str.replace("Z", "+00:00"))
+                except ValueError:
+                    try:
+                        panel_date = datetime.strptime(expire_str.split('.')[0], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                    except:
+                        continue
+
+                await sync_subscription_date(user_id, panel_date, current_time)
+                await asyncio.sleep(0.05)
+                
     except Exception as e:
         logger.error(f"SCHEDULER_SYNC: Критическая ошибка на этапе синхронизации: {e}", exc_info=True)
     logger.info("SCHEDULER_SYNC: Этап синхронизации завершен.")
@@ -116,3 +124,43 @@ async def run_notifications(bot: Bot):
         logger.error(f"SCHEDULER_NOTIFY: Критическая ошибка при отправке уведомлений об истечении: {e}", exc_info=True)
     
     logger.info("SCHEDULER: Периодическая задача завершена.")
+
+async def send_logs_to_admins(bot: Bot):
+    """Отправляет логи админам и удаляет их"""
+    log_dir = config.LOG_DIR
+    if not os.path.exists(log_dir):
+        return
+    
+    log_files = glob.glob(os.path.join(log_dir, '*.log*'))
+    if not log_files:
+        return
+    
+    for admin_id in config.ADMIN_IDS:
+        for log_file in log_files:
+            try:
+                if os.path.getsize(log_file) > 0:
+                    with open(log_file, 'rb') as f:
+                        await bot.send_document(
+                            chat_id=admin_id,
+                            document=f,
+                            filename=f"logs_{datetime.now().strftime('%Y%m%d')}_{os.path.basename(log_file)}",
+                            caption=f"📄 Логи за {datetime.now().strftime('%d.%m.%Y')}"
+                        )
+            except (Forbidden, BadRequest) as e:
+                logger.warning(f"Не удалось отправить логи админу {admin_id}: {e}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки логов: {e}")
+    
+    # Удаляем отправленные логи (кроме текущего)
+    main_log = os.path.join(log_dir, 'bot.log')
+    for log_file in log_files:
+        try:
+            if log_file != main_log:
+                os.remove(log_file)
+            else:
+                # Очищаем основной лог
+                open(log_file, 'w').close()
+        except Exception as e:
+            logger.error(f"Ошибка удаления лога {log_file}: {e}")
+    
+    logger.info("SCHEDULER: Логи отправлены админам и очищены.")

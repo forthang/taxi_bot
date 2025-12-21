@@ -212,8 +212,31 @@ async def get_payment_info(payment_id: str) -> Optional[dict]:
 async def get_pending_payments() -> List[Tuple[Any, ...]]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT payment_id, user_id, tariff FROM payments WHERE status IN ('pending', 'processing')")
+        rows = await conn.fetch("SELECT payment_id, user_id, tariff FROM payments WHERE status IN ('pending', 'processing') ORDER BY created_at DESC")
         return [(row['payment_id'], row['user_id'], row['tariff']) for row in rows]
+
+async def get_completed_payments(limit: int = 20) -> List[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT payment_id, user_id, amount, tariff, updated_at FROM payments WHERE status = 'completed' ORDER BY updated_at DESC LIMIT $1",
+            limit
+        )
+        return [dict(row) for row in rows]
+
+async def get_payment_stats() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total_row = await conn.fetchrow("SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed'")
+        today_row = await conn.fetchrow(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total FROM payments WHERE status = 'completed' AND updated_at >= CURRENT_DATE"
+        )
+        return {
+            "total_count": total_row['cnt'] if total_row else 0,
+            "total_amount": float(total_row['total']) if total_row else 0,
+            "today_count": today_row['cnt'] if today_row else 0,
+            "today_amount": float(today_row['total']) if today_row else 0
+        }
 
 # --- Прочее ---
 
@@ -346,14 +369,17 @@ async def get_all_active_users_for_sync():
 
 async def sync_subscription_date(user_id: int, new_end_date: datetime, current_time: datetime):
     pool = await get_pool()
+    # Убираем timezone info для совместимости с PostgreSQL
+    if new_end_date.tzinfo is not None:
+        new_end_date = new_end_date.replace(tzinfo=None)
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE subscriptions 
             SET end_date = $1, 
-                notification_sent = CASE WHEN $2 > end_date THEN 0 ELSE notification_sent END,
-                pre_expiration_notification_sent = CASE WHEN $2 > end_date THEN 0 ELSE pre_expiration_notification_sent END
-            WHERE user_id = $3 AND status = 'active'
-        """, new_end_date, new_end_date, user_id)
+                notification_sent = CASE WHEN $1 > end_date THEN 0 ELSE notification_sent END,
+                pre_expiration_notification_sent = CASE WHEN $1 > end_date THEN 0 ELSE pre_expiration_notification_sent END
+            WHERE user_id = $2 AND status = 'active'
+        """, new_end_date, user_id)
 
 # --- Настройки ---
 

@@ -11,7 +11,7 @@ from telegram.error import BadRequest, Forbidden
 
 from database import (
     get_stats, get_all_user_ids, get_payment_info, get_pending_payments,
-    get_active_subscription, update_or_create_subscription
+    get_active_subscription, update_or_create_subscription, get_completed_payments, get_payment_stats
 )
 from config import config, TARIFFS, save_tariff_price
 
@@ -53,6 +53,7 @@ class AdminPanel:
     def get_payments_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⏳ Ожидающие платежи", callback_data="admin_pending_payments")],
+            [InlineKeyboardButton("✅ Оплаченные", callback_data="admin_completed_payments")],
             [InlineKeyboardButton("📈 Статистика платежей", callback_data="admin_payment_stats")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="admin_main")]
         ])
@@ -150,12 +151,15 @@ class AdminPanel:
             if not pending:
                 text = "✅ Нет ожидающих платежей"
             else:
-                text = "⏳ **Ожидающие платежи:**\n\n"
-                for payment_id, user_id, tariff in pending[:10]:  # Показываем только первые 10
-                    text += f"• `{payment_id[:20]}...` - User: `{user_id}` - `{tariff}`\n"
+                text = f"⏳ **Ожидающие платежи ({len(pending)}):**\n\n"
+                for payment_id, user_id, tariff in pending[:15]:
+                    tariff_info = TARIFFS.get(tariff, {})
+                    price = tariff_info.get('price', '?')
+                    days = tariff_info.get('days', '?')
+                    text += f"• User `{user_id}` — {days} дн. ({price}₽)\n  ID: `{payment_id[:16]}...`\n"
                 
-                if len(pending) > 10:
-                    text += f"\n... и еще {len(pending) - 10} платежей"
+                if len(pending) > 15:
+                    text += f"\n... и еще {len(pending) - 15} платежей"
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Обновить", callback_data="admin_pending_payments")],
@@ -166,6 +170,62 @@ class AdminPanel:
         except Exception as e:
             logger.error(f"Ошибка получения платежей: {e}")
             await query.edit_message_text("❌ Ошибка получения данных о платежах")
+
+    @staticmethod
+    async def show_completed_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        try:
+            completed = await get_completed_payments(20)
+            
+            if not completed:
+                text = "📭 Нет оплаченных платежей"
+            else:
+                text = f"✅ **Последние оплаченные ({len(completed)}):**\n\n"
+                for p in completed:
+                    tariff_info = TARIFFS.get(p['tariff'], {})
+                    days = tariff_info.get('days', '?')
+                    date_str = p['updated_at'].strftime('%d.%m %H:%M') if p['updated_at'] else '?'
+                    text += f"• User `{p['user_id']}` — {days} дн. ({p['amount']:.0f}₽) — {date_str}\n"
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Обновить", callback_data="admin_completed_payments")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="admin_payments")]
+            ])
+            
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Ошибка получения оплаченных платежей: {e}")
+            await query.edit_message_text("❌ Ошибка получения данных")
+
+    @staticmethod
+    async def show_payment_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        try:
+            stats = await get_payment_stats()
+            
+            text = f"""📈 **Статистика платежей**
+
+💰 **Всего:**
+• Платежей: `{stats['total_count']}`
+• Сумма: `{stats['total_amount']:.0f}₽`
+
+📅 **Сегодня:**
+• Платежей: `{stats['today_count']}`
+• Сумма: `{stats['today_amount']:.0f}₽`"""
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Обновить", callback_data="admin_payment_stats")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="admin_payments")]
+            ])
+            
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Ошибка получения статистики платежей: {e}")
+            await query.edit_message_text("❌ Ошибка получения статистики")
 
 # Обработчики для ConversationHandler
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
